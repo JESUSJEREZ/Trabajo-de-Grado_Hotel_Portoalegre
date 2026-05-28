@@ -137,25 +137,77 @@ st.markdown("""
 
 @st.cache_data(show_spinner=False)
 def cargar_datos(file_bytes: bytes) -> pd.DataFrame:
-    """Carga el archivo XLS del PMS Lobbybookings."""
+    """Carga el archivo XLS/XLSX del PMS Lobbybookings.
+    Maneja variaciones en nombres de columnas y formatos de exportación.
+    """
     try:
         dfs = pd.read_html(io.BytesIO(file_bytes), encoding="latin-1")
         df = dfs[0]
     except Exception:
         df = pd.read_excel(io.BytesIO(file_bytes))
 
-    # Normalizar nombre de columna monetaria
-    if "Total de la reserva" in df.columns:
-        df = df.rename(columns={"Total de la reserva": "total_cop"})
+    # ── Limpiar nombres de columna: quitar espacios y saltos de línea ─────────
+    df.columns = [str(c).strip().replace("\n", " ").replace("\r", "") for c in df.columns]
 
-    # Limpiar total_cop
+    # ── Mapa de renombrado flexible (variantes del PMS Lobbybookings) ─────────
+    renombrar = {
+        # Motivo — variantes posibles
+        "Motivo de cancelación": "Motivo",
+        "Motivo Cancelación":    "Motivo",
+        "motivo":                "Motivo",
+        "MOTIVO":                "Motivo",
+        # Total reserva
+        "Total de la reserva":   "total_cop",
+        "Total Reserva":         "total_cop",
+        "Valor reserva":         "total_cop",
+        "total reserva":         "total_cop",
+        # Canal
+        "Canal de venta":        "Canal",
+        "Canal Venta":           "Canal",
+        # Cancelada por
+        "Cancelado por":         "Cancelada por",
+        # Habitación
+        "Habitacion":            "Habitación",
+        "habitación":            "Habitación",
+        # Huésped
+        "Huesped":               "huésped",
+        "Huésped":               "huésped",
+        "Cliente":               "huésped",
+        # Fechas
+        "Fecha Cancelación":     "Fecha cancelación",
+        "Fecha de cancelación":  "Fecha cancelación",
+        "Fecha Creación":        "Fecha creación",
+        "Fecha de creación":     "Fecha creación",
+        "Fecha Entrada":         "Entrada",
+        "Fecha entrada":         "Entrada",
+        "Fecha Salida":          "Salida",
+        "Fecha salida":          "Salida",
+    }
+    df = df.rename(columns=renombrar)
+
+    # ── Si "Motivo" sigue sin existir, buscar columna que contenga "motivo" ───
+    if "Motivo" not in df.columns:
+        for col in df.columns:
+            if "motivo" in col.lower() or "cancelac" in col.lower():
+                df = df.rename(columns={col: "Motivo"})
+                break
+
+    # ── Si aún no hay "Motivo", crear columna vacía para no romper el flujo ───
+    if "Motivo" not in df.columns:
+        df["Motivo"] = "Cancelación oportuna del cliente"
+
+    # ── Limpiar total_cop ──────────────────────────────────────────────────────
     if "total_cop" in df.columns and df["total_cop"].dtype == object:
         df["total_cop"] = (
             df["total_cop"].astype(str)
             .str.replace("COP ", "", regex=False)
-            .str.replace(",", "", regex=False)
-            .astype(float)
+            .str.replace("$",   "", regex=False)
+            .str.replace(".",   "", regex=False)
+            .str.replace(",",   ".", regex=False)
+            .str.strip()
         )
+        df["total_cop"] = pd.to_numeric(df["total_cop"], errors="coerce")
+
     return df
 
 
@@ -281,10 +333,11 @@ def preparar_xy(train_df, test_df):
 
 
 @st.cache_data(show_spinner=False)
-def entrenar_modelo(_X_train: pd.DataFrame, _y_train: pd.Series, modo: str):
+def entrenar_modelo(_X_train: pd.DataFrame, _y_train: pd.Series,
+                    modo: str, column_hash: str):
     """Entrena RF con SMOTE pipeline. modo='rapido' o 'optimizado'.
-    Prefijo _ en parámetros para que st.cache_data no intente hashearlos
-    y use en su lugar el hash de sus valores internos de forma segura.
+    column_hash: hash de los nombres de columnas de X_train para invalidar
+    el caché cuando cambia la estructura del archivo cargado.
     """
     pipe = ImbPipeline([
         ("smote", SMOTE(random_state=42)),
@@ -427,6 +480,19 @@ if archivo is None:
 # ── Cargar y preparar datos ────────────────────────────────────────────────────
 with st.spinner("📂 Cargando datos del PMS..."):
     df_raw = cargar_datos(archivo.read())
+
+    # ── Diagnóstico: mostrar columnas si falta alguna clave ───────────────────
+    cols_requeridas = ["Motivo", "Entrada", "Salida", "Fecha cancelación", "Fecha creación"]
+    cols_faltantes  = [c for c in cols_requeridas if c not in df_raw.columns]
+    if cols_faltantes:
+        st.warning(f"⚠️ Columnas no encontradas: **{cols_faltantes}**  \n"
+                   f"Columnas detectadas en el archivo: `{list(df_raw.columns)}`  \n"
+                   f"Verifica que el archivo sea el export correcto de Lobbybookings.")
+
+    # ── Si no hay Fecha creación, usar Fecha cancelación como proxy ───────────
+    if "Fecha creación" not in df_raw.columns and "Fecha cancelación" in df_raw.columns:
+        df_raw["Fecha creación"] = df_raw["Fecha cancelación"]
+
     df = parsear_fechas(df_raw.copy())
     df = construir_target(df)
     df = feature_engineering_base(df)
@@ -456,9 +522,24 @@ train_df, test_df, canal_map = calcular_score_canal(train_df, test_df)
 X_train, y_train, X_test, y_test = preparar_xy(train_df, test_df)
 
 with st.spinner(f"🌲 Entrenando Random Forest ({modo})... esto puede tomar unos segundos."):
-    modelo, params_usados = entrenar_modelo(X_train, y_train, modo)
+    # column_hash invalida el caché si cambia la estructura de columnas del archivo
+    column_hash = str(sorted(X_train.columns.tolist()))
+    modelo, params_usados = entrenar_modelo(X_train, y_train, modo, column_hash)
 
 # ── Predicciones en test ───────────────────────────────────────────────────────
+# Forzar que X_test tenga exactamente las columnas con las que el modelo fue entrenado
+# (el modelo sklearn guarda feature_names_in_ internamente)
+try:
+    feature_names_model = modelo.named_steps["clf"].feature_names_in_
+    X_test  = X_test.reindex(columns=feature_names_model, fill_value=0)
+    X_train = X_train.reindex(columns=feature_names_model, fill_value=0)
+except AttributeError:
+    # Si el modelo no tiene feature_names_in_, alinear con X_train directamente
+    X_test  = X_test.reindex(columns=X_train.columns, fill_value=0)
+
+X_test  = X_test.fillna(0).replace([np.inf, -np.inf], 0)
+X_train = X_train.fillna(0).replace([np.inf, -np.inf], 0)
+
 y_pred  = modelo.predict(X_test)
 y_proba = modelo.predict_proba(X_test)[:, 1]
 
