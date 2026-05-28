@@ -767,13 +767,17 @@ with tab3:
 
     fig_temp = make_subplots(rows=1, cols=2,
         subplot_titles=["Tasa problemática (%)", "COP perdido promedio por reserva"])
-    for i,(row,color) in enumerate(zip(temp_stats.itertuples(),[COLORES["rojo"],COLORES["azul2"]])):
-        fig_temp.add_trace(go.Bar(x=[row.temporada], y=[row._4],
-            marker_color=color, name=row.temporada,
-            text=[f"{row._4:.1f}%"], textposition="outside"), row=1, col=1)
-        fig_temp.add_trace(go.Bar(x=[row.temporada], y=[row.cop_promedio],
+    colores_temp = [COLORES["rojo"], COLORES["azul2"]]
+    for i, (_, row) in enumerate(temp_stats.iterrows()):
+        color = colores_temp[i % len(colores_temp)]
+        tasa_val     = row["tasa_%"]
+        cop_prom_val = row["cop_promedio"]
+        fig_temp.add_trace(go.Bar(x=[row["temporada"]], y=[tasa_val],
+            marker_color=color, name=row["temporada"],
+            text=[f"{tasa_val:.1f}%"], textposition="outside"), row=1, col=1)
+        fig_temp.add_trace(go.Bar(x=[row["temporada"]], y=[cop_prom_val],
             marker_color=color, showlegend=False,
-            text=[formatear_cop(row.cop_promedio)], textposition="outside"), row=1, col=2)
+            text=[formatear_cop(cop_prom_val)], textposition="outside"), row=1, col=2)
     fig_temp.update_layout(height=300, margin=dict(l=20,r=20,t=40,b=40),
                             plot_bgcolor="white", paper_bgcolor="white",
                             showlegend=False, barmode="group")
