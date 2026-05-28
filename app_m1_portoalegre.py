@@ -187,6 +187,15 @@ def feature_engineering_base(df: pd.DataFrame) -> pd.DataFrame:
     df["hora_cancelacion"]             = df["Fecha cancelación"].dt.hour
     df["es_temporada_alta"]            = df["mes_entrada"].isin(MESES_ALTA).astype(int)
 
+    # Imputar NaN en variables numéricas derivadas de fechas
+    # (ocurre cuando Entrada/Salida/Fecha cancelación no parsean)
+    for col in ["noches_reserva", "dias_hasta_entrada", "dias_anticipacion_cancelacion"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
+    for col in ["mes_entrada", "dia_semana_entrada", "mes_creacion", "hora_cancelacion"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(1).astype(float)
+    df["es_fin_de_semana"]  = df["es_fin_de_semana"].fillna(0).astype(int)
+    df["es_temporada_alta"] = df["es_temporada_alta"].fillna(0).astype(int)
+
     # cancelaciones_previas_huesped — cumcount anticausal (celda 22)
     if "huésped" in df.columns:
         df["cancelaciones_previas_huesped"] = df.groupby("huésped").cumcount()
@@ -196,17 +205,15 @@ def feature_engineering_base(df: pd.DataFrame) -> pd.DataFrame:
     # Imputar nulos en total_cop con mediana
     if "total_cop" in df.columns:
         df["total_cop"] = pd.to_numeric(df["total_cop"], errors="coerce")
-        df["total_cop"].fillna(df["total_cop"].median(), inplace=True)
+        mediana = df["total_cop"].median()
+        df["total_cop"] = df["total_cop"].fillna(mediana if not pd.isna(mediana) else 0)
     else:
         df["total_cop"] = 0
 
     # Imputar canal desconocido
-    if "Canal" in df.columns:
-        df["Canal"].fillna("Desconocido", inplace=True)
-    if "Cancelada por" in df.columns:
-        df["Cancelada por"].fillna("Desconocido", inplace=True)
-    if "Habitación" in df.columns:
-        df["Habitación"].fillna("Desconocido", inplace=True)
+    for col in ["Canal", "Cancelada por", "Habitación"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("Desconocido").astype(str)
 
     return df
 
@@ -234,6 +241,25 @@ def preparar_xy(train_df, test_df):
     """One-Hot Encoding + alineación de columnas — celda 37."""
     FEATURES_FINAL = FEATURES_NUM + FEATURES_GRUPALES + FEATURES_CAT
 
+    # Imputar NaN en columnas numéricas ANTES del encoding
+    # (pueden aparecer cuando fechas no parsean bien en el archivo del PMS)
+    for col in FEATURES_NUM + FEATURES_GRUPALES:
+        if col in train_df.columns:
+            mediana = train_df[col].median()
+            mediana = 0 if pd.isna(mediana) else mediana
+            train_df[col] = train_df[col].fillna(mediana)
+        if col in test_df.columns:
+            mediana = train_df[col].median() if col in train_df.columns else 0
+            mediana = 0 if pd.isna(mediana) else mediana
+            test_df[col] = test_df[col].fillna(mediana)
+
+    # Imputar NaN en columnas categóricas
+    for col in FEATURES_CAT:
+        if col in train_df.columns:
+            train_df[col] = train_df[col].fillna("Desconocido").astype(str)
+        if col in test_df.columns:
+            test_df[col] = test_df[col].fillna("Desconocido").astype(str)
+
     train_enc = pd.get_dummies(train_df[FEATURES_FINAL + [TARGET]], columns=FEATURES_CAT, drop_first=True)
     test_enc  = pd.get_dummies(test_df[FEATURES_FINAL  + [TARGET]], columns=FEATURES_CAT, drop_first=True)
 
@@ -242,7 +268,15 @@ def preparar_xy(train_df, test_df):
     X_test  = test_enc.drop(columns=[TARGET])
     y_test  = test_enc[TARGET]
 
-    X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
+    # Alinear columnas y rellenar cualquier NaN residual con 0
+    X_test  = X_test.reindex(columns=X_train.columns, fill_value=0)
+    X_train = X_train.fillna(0)
+    X_test  = X_test.fillna(0)
+
+    # Reemplazar infinitos si los hubiera (ej. divisiones en features derivadas)
+    X_train = X_train.replace([np.inf, -np.inf], 0)
+    X_test  = X_test.replace([np.inf, -np.inf], 0)
+
     return X_train, y_train, X_test, y_test
 
 
