@@ -1,0 +1,57 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# .gitignore — Trabajo de Grado Hotel Portoalegre
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Entorno virtual ───────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# ── Datos del hotel (protección Ley 1581 de 2012) ────────────────────────────
+*.xls
+*.xlsx
+*.csv
+data/
+raw_data/
+
+# ── Modelos serializados (pueden ser grandes) ─────────────────────────────────
+*.pkl
+*.joblib
+*.h5
+*.model
+models/
+
+# ── Jupyter / IPython ─────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Streamlit cache ───────────────────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ── Sistema operativo ─────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Logs y temporales ─────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
