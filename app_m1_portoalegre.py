@@ -993,20 +993,6 @@ with tab2:
             lambda m: "Alta" if m in MESES_ALTA else
                       "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
         fuente_score = "test"
-    cols_score = ([fecha_col_score] if fecha_col_score else []) + [
-        "Entrada", "Canal", "Habitación", "total_cop", "mes_entrada", "target"
-    ]
-    cols_score = [c for c in cols_score if c in test_df.columns]
-    df_score = test_df[cols_score].copy().reset_index(drop=True)
-    if fecha_col_score and fecha_col_score != "Fecha cancelación":
-        df_score = df_score.rename(columns={fecha_col_score: "Fecha cancelación"})
-    elif "Fecha cancelación" not in df_score.columns:
-        df_score["Fecha cancelación"] = pd.NaT
-    df_score["score"]  = np.round(y_proba, 4)
-    df_score["umbral"] = df_score["mes_entrada"].apply(umbral_por_temporada)
-    df_score["riesgo"] = df_score.apply(
-        lambda r: clasificar_riesgo(r["score"], r["mes_entrada"]), axis=1)
-    df_score["real"]   = df_score["target"].map({1:"Problemática", 0:"No prob."})
 
     # Filtros
     f1, f2, f3 = st.columns(3)
