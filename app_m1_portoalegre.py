@@ -137,131 +137,226 @@ st.markdown("""
 
 @st.cache_data(show_spinner=False)
 def cargar_datos(file_bytes: bytes) -> pd.DataFrame:
-    """Carga el archivo XLS/XLSX del PMS Lobbybookings.
-    Prueba múltiples estrategias de lectura para máxima compatibilidad
-    con las exportaciones de Lobbybookings en distintos entornos.
+    """Carga el archivo XLS del PMS Lobbybookings.
+
+    El archivo real de Lobbybookings es:
+    - HTML disfrazado de .xls
+    - Encoding: UTF-8 con BOM (EF BB BF)
+    - Fila 0: aviso de separador de miles (colspan=21) → IGNORAR
+    - Fila 1: headers reales
+    - Fila 2+: datos
     """
+    from bs4 import BeautifulSoup
     df = None
     errores = []
 
-    # Estrategia 1: read_html (maneja .xls exportados como HTML por Lobbybookings)
-    try:
-        dfs = pd.read_html(io.BytesIO(file_bytes), encoding="latin-1")
-        if dfs and len(dfs[0]) > 0:
-            df = dfs[0]
-    except Exception as e:
-        errores.append(f"read_html latin-1: {e}")
-
-    # Estrategia 2: read_html utf-8
-    if df is None:
+    # ── Estrategia 1: BeautifulSoup UTF-8-BOM (formato real Lobbybookings) ────
+    for enc in ["utf-8-sig", "utf-8", "cp1252", "latin-1"]:
         try:
-            dfs = pd.read_html(io.BytesIO(file_bytes), encoding="utf-8")
-            if dfs and len(dfs[0]) > 0:
-                df = dfs[0]
-        except Exception as e:
-            errores.append(f"read_html utf-8: {e}")
+            texto = file_bytes.decode(enc, errors="replace")
+            if "<table" not in texto.lower():
+                continue
+            soup = BeautifulSoup(texto, "html.parser")
+            table = soup.find("table")
+            if not table:
+                continue
+            rows = table.find_all("tr")
+            if len(rows) < 2:
+                continue
 
-    # Estrategia 3: openpyxl (xlsx)
-    if df is None:
+            # Detectar si fila 0 es el aviso (colspan grande o texto de aviso)
+            first_cells = rows[0].find_all(["th","td"])
+            is_aviso = (
+                len(first_cells) == 1 or
+                any(int(c.get("colspan",1)) > 5 for c in first_cells) or
+                any("separador" in c.get_text().lower() for c in first_cells)
+            )
+            header_row = 1 if is_aviso else 0
+            data_start  = header_row + 1
+
+            headers = [th.get_text(strip=True)
+                       for th in rows[header_row].find_all(["th","td"])]
+
+            if len(headers) < 5:
+                continue
+
+            data = []
+            for row in rows[data_start:]:
+                cells = [td.get_text(strip=True)
+                         for td in row.find_all(["th","td"])]
+                if not any(c for c in cells):
+                    continue
+                # Alinear longitud
+                if len(cells) < len(headers):
+                    cells += [""] * (len(headers) - len(cells))
+                data.append(cells[:len(headers)])
+
+            if data:
+                df = pd.DataFrame(data, columns=headers)
+                break
+        except Exception as e:
+            errores.append(f"BS4 {enc}: {e}")
+
+    # ── Estrategia 2: openpyxl ────────────────────────────────────────────────
+    if df is None or len(df.columns) < 5:
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
         except Exception as e:
             errores.append(f"openpyxl: {e}")
 
-    # Estrategia 4: xlrd (xls legacy)
-    if df is None:
+    # ── Estrategia 3: xlrd ────────────────────────────────────────────────────
+    if df is None or len(df.columns) < 5:
         try:
             df = pd.read_excel(io.BytesIO(file_bytes), engine="xlrd")
         except Exception as e:
             errores.append(f"xlrd: {e}")
 
-    # Estrategia 5: csv como último recurso
-    if df is None:
-        try:
-            for sep in [",", ";", "\t"]:
-                try:
-                    df = pd.read_csv(
-                        io.BytesIO(file_bytes), sep=sep,
-                        encoding="latin-1", on_bad_lines="skip"
-                    )
-                    if len(df.columns) > 3:
-                        break
-                except Exception:
-                    continue
-        except Exception as e:
-            errores.append(f"csv: {e}")
-
     if df is None or len(df) == 0:
         raise ValueError(
-            f"No se pudo leer el archivo. Intentos fallidos: {errores}. "
-            f"Asegúrate de subir el archivo exportado desde "
-            f"Lobbybookings → Reservas → Canceladas → Exportar a Excel."
+            f"No se pudo leer el archivo ({len(file_bytes)//1024}KB). "
+            f"Intentos: {errores}. "
+            f"Abre el archivo en Excel, guarda como .xlsx y sube esa versión."
         )
 
-    # ── Limpiar nombres de columna: quitar espacios y saltos de línea ─────────
-    df.columns = [str(c).strip().replace("\n", " ").replace("\r", "") for c in df.columns]
-
-    # ── Eliminar filas completamente vacías ────────────────────────────────────
+    # ── Limpiar nombres de columna ────────────────────────────────────────────
+    df.columns = [
+        str(c).strip().replace("\n"," ").replace("\r","").replace("\xa0"," ").strip()
+        for c in df.columns
+    ]
     df = df.dropna(how="all").reset_index(drop=True)
 
-    # ── Mapa de renombrado flexible (variantes del PMS Lobbybookings) ─────────
+    # ── Mapa de renombrado — nombres EXACTOS del PMS Lobbybookings ────────────
+    # Basado en inspección directa del archivo real
     renombrar = {
-        # Motivo — variantes posibles
-        "Motivo de cancelación": "Motivo",
-        "Motivo Cancelación":    "Motivo",
-        "motivo":                "Motivo",
-        "MOTIVO":                "Motivo",
-        # Total reserva
-        "Total de la reserva":   "total_cop",
-        "Total Reserva":         "total_cop",
-        "Valor reserva":         "total_cop",
-        "total reserva":         "total_cop",
-        # Canal
-        "Canal de venta":        "Canal",
-        "Canal Venta":           "Canal",
-        # Cancelada por
-        "Cancelado por":         "Cancelada por",
-        # Habitación
-        "Habitacion":            "Habitación",
-        "habitación":            "Habitación",
         # Huésped
-        "Huesped":               "huésped",
-        "Huésped":               "huésped",
-        "Cliente":               "huésped",
+        "Titular":                      "huésped",
+        "Huésped":                      "huésped",
+        "Huesped":                      "huésped",
+        "Cliente":                      "huésped",
         # Fechas
-        "Fecha Cancelación":     "Fecha cancelación",
-        "Fecha de cancelación":  "Fecha cancelación",
-        "Fecha Creación":        "Fecha creación",
-        "Fecha de creación":     "Fecha creación",
-        "Fecha Entrada":         "Entrada",
-        "Fecha entrada":         "Entrada",
-        "Fecha Salida":          "Salida",
-        "Fecha salida":          "Salida",
+        "Ingreso":                      "Entrada",
+        "Fecha Entrada":                "Entrada",
+        "Fecha entrada":                "Entrada",
+        "Fecha de entrada":             "Entrada",
+        "Check-in":                     "Entrada",
+        "Salida":                       "Salida",          # ya coincide
+        "Fecha Salida":                 "Salida",
+        "Fecha salida":                 "Salida",
+        "Fecha de salida":              "Salida",
+        "Check-out":                    "Salida",
+        "Fecha creación":               "Fecha creación",  # ya coincide
+        "Fecha Creación":               "Fecha creación",
+        "Fecha de creación":            "Fecha creación",
+        "Creación":                     "Fecha creación",
+        # Fecha cancelación (en el export de canceladas)
+        "Fecha cancelación":            "Fecha cancelación",
+        "Fecha Cancelación":            "Fecha cancelación",
+        "Fecha de cancelación":         "Fecha cancelación",
+        # Canal
+        "Canal":                        "Canal",           # ya coincide
+        "Canal de venta":               "Canal",
+        "Canal Venta":                  "Canal",
+        # Creada por → Cancelada por (solo en exports de reservas activas)
+        # NO renombrar como Fecha cancelación
+        "Creada por":                   "Cancelada por",
+        # Habitación
+        "Habitación":                   "Habitación",      # ya coincide
+        "Habitacion":                   "Habitación",
+        "Cuarto":                       "Habitación",
+        # Motivo
+        "Motivo":                       "Motivo",
+        "Motivo de cancelación":        "Motivo",
+        "Motivo Cancelación":           "Motivo",
+        "Motivo cancelación":           "Motivo",
+        # Total
+        "Total alojamiento":            "total_cop",
+        "Total de la reserva":          "total_cop",
+        "Total Reserva":                "total_cop",
+        "Valor reserva":                "total_cop",
+        "Total":                        "total_cop",
     }
     df = df.rename(columns=renombrar)
 
-    # ── Si "Motivo" sigue sin existir, buscar columna que contenga "motivo" ───
-    if "Motivo" not in df.columns:
-        for col in df.columns:
-            if "motivo" in col.lower() or "cancelac" in col.lower():
-                df = df.rename(columns={col: "Motivo"})
-                break
+    # ── Búsqueda flexible por keywords si aún faltan columnas clave ──────────
+    kw_map = {
+        "Motivo":             ["motivo", "cancelac", "razon"],
+        "Estatus":            ["estatus", "status", "estado"],
+        "Entrada":            ["ingreso", "entrada", "check-in", "llegada"],
+        "Salida":             ["salida",  "check-out", "partida"],
+        "Fecha cancelación":  ["fecha cancel", "cancelad"],
+        "Fecha creación":     ["crea", "creado", "registr"],
+        "Canal":              ["canal", "channel", "origen"],
+        "Habitación":         ["habitac", "cuarto", "room"],
+        "total_cop":          ["total", "valor", "alojam", "monto", "cop"],
+        "huésped":            ["titular", "huesped", "cliente", "nombre",
+                               "pasajero"],
+    }
+    for target, kws in kw_map.items():
+        if target not in df.columns:
+            for col in df.columns:
+                if any(kw in col.lower() for kw in kws):
+                    df = df.rename(columns={col: target})
+                    break
 
-    # ── Si aún no hay "Motivo", crear columna vacía para no romper el flujo ───
-    if "Motivo" not in df.columns:
-        df["Motivo"] = "Cancelación oportuna del cliente"
+    # ── Mapear Estatus → Motivo si no hay columna Motivo ─────────────────────
+    # El export de reservas activas tiene 'Estatus' en lugar de 'Motivo'
+    if "Motivo" not in df.columns and "Estatus" in df.columns:
+        ESTATUS_A_MOTIVO = {
+            "Sin pagos":               "Pago rechazado",
+            "Con pagos parciales":     "Pago rechazado",
+            "Traslado de habitación":  "Cambio de habitación",
+            "Cuenta pagada":           "Cancelación oportuna del cliente",
+            "No show":                 "No show",
+            "Sin comunicación":        "Cliente sin comunicación",
+        }
+        df["Motivo"] = df["Estatus"].map(ESTATUS_A_MOTIVO).fillna(
+            "Cancelación oportuna del cliente"
+        )
+
+    # ── Columnas mínimas con fallbacks ────────────────────────────────────────
+    defaults = {
+        "Motivo":            "Cancelación oportuna del cliente",
+        "huésped":           "Desconocido",
+        "Canal":             "Desconocido",
+        "Habitación":        "Desconocido",
+        "Cancelada por":     "Desconocido",
+    }
+    for col, default in defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+    # Si no hay Fecha cancelación usar Fecha creación o now()
+    if "Fecha cancelación" not in df.columns:
+        df["Fecha cancelación"] = df.get("Fecha creación",
+                                          pd.Timestamp.now().strftime("%Y-%m-%d"))
+
+    # Si no hay Entrada/Salida usar Fecha cancelación
+    for fc in ["Entrada", "Salida", "Fecha creación"]:
+        if fc not in df.columns:
+            df[fc] = df["Fecha cancelación"]
 
     # ── Limpiar total_cop ──────────────────────────────────────────────────────
-    if "total_cop" in df.columns and df["total_cop"].dtype == object:
-        df["total_cop"] = (
-            df["total_cop"].astype(str)
-            .str.replace("COP ", "", regex=False)
-            .str.replace("$",   "", regex=False)
-            .str.replace(".",   "", regex=False)
-            .str.replace(",",   ".", regex=False)
-            .str.strip()
-        )
-        df["total_cop"] = pd.to_numeric(df["total_cop"], errors="coerce")
+    if "total_cop" in df.columns:
+        def parse_cop(val):
+            val = str(val).strip()
+            for ch in ["COP","$","\xa0"," "]:
+                val = val.replace(ch, "")
+            if not val or val.lower() in ["nan","none",""]:
+                return np.nan
+            # Formato colombiano: punto=miles, coma=decimal (594957.00)
+            if "." in val and "," in val:
+                val = val.replace(".", "").replace(",", ".")
+            elif "." in val:
+                parts = val.split(".")
+                if len(parts[-1]) == 3:
+                    val = val.replace(".", "")
+            elif "," in val:
+                val = val.replace(",", ".")
+            try:
+                return float(val)
+            except Exception:
+                return np.nan
+        df["total_cop"] = df["total_cop"].apply(parse_cop)
 
     return df
 
