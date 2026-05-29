@@ -379,6 +379,10 @@ def feature_engineering_base(df: pd.DataFrame) -> pd.DataFrame:
     """Feature engineering base — fiel a celda 22 y 25 del notebook."""
     df = df.sort_values("Fecha creación").reset_index(drop=True)
 
+    # Si no hay Fecha cancelación usar Fecha creación como proxy
+    if "Fecha cancelación" not in df.columns:
+        df["Fecha cancelación"] = df["Fecha creación"]
+
     df["noches_reserva"]               = (df["Salida"] - df["Entrada"]).dt.days
     df["dias_hasta_entrada"]           = (df["Entrada"] - df["Fecha cancelación"]).dt.days
     df["dias_anticipacion_cancelacion"]= (df["Fecha cancelación"] - df["Fecha creación"]).dt.days
@@ -804,10 +808,20 @@ with tab2:
     st.markdown("### Scoring de reservas del conjunto de prueba")
     st.caption("Clasificación con umbrales dinámicos por temporada: Alta 0.25 · Precursor 0.30 · Media/Baja 0.45")
 
-    # Construir tabla de scoring
-    df_score = test_df[["Fecha cancelación", "Entrada", "Canal",
-                         "Habitación", "total_cop", "mes_entrada",
-                         "target"]].copy().reset_index(drop=True)
+    # Construir tabla de scoring — usar fecha disponible con fallback
+    fecha_col_score = next(
+        (c for c in ["Fecha cancelación", "Fecha creación", "Entrada"]
+         if c in test_df.columns), None
+    )
+    cols_score = ([fecha_col_score] if fecha_col_score else []) + [
+        "Entrada", "Canal", "Habitación", "total_cop", "mes_entrada", "target"
+    ]
+    cols_score = [c for c in cols_score if c in test_df.columns]
+    df_score = test_df[cols_score].copy().reset_index(drop=True)
+    if fecha_col_score and fecha_col_score != "Fecha cancelación":
+        df_score = df_score.rename(columns={fecha_col_score: "Fecha cancelación"})
+    elif "Fecha cancelación" not in df_score.columns:
+        df_score["Fecha cancelación"] = pd.NaT
     df_score["score"]  = np.round(y_proba, 4)
     df_score["umbral"] = df_score["mes_entrada"].apply(umbral_por_temporada)
     df_score["riesgo"] = df_score.apply(
@@ -911,14 +925,43 @@ with tab3:
     recall_ob3           = recall_score(df_test_ob3["target_r"], df_test_ob3["pred_r"])
 
     # ── Proyección inflacionaria (celda 73) ────────────────────────────────────
-    anio_base = test_df["Fecha cancelación"].dt.year.mode()[0] if "Fecha cancelación" in test_df else 2025
-    df_base_proy = df[
-        (df["target"]==1) & (df["Fecha cancelación"].dt.year==anio_base)
-    ]["total_cop"]
-    cop_base_proy   = df_base_proy.sum()
-    cop_proyectado  = cop_base_proy * (1 + inflacion)
-    oportunidad_proy= cop_proyectado * recall_ob3
-    cop_no_id_proy  = cop_proyectado * (1 - recall_ob3)
+    # Determinar año base de forma robusta (puede faltar Fecha cancelación)
+    try:
+        fecha_col_proy = None
+        for fc in ["Fecha cancelación", "Fecha creación", "Entrada"]:
+            if fc in test_df.columns:
+                serie = pd.to_datetime(test_df[fc], errors="coerce").dropna()
+                if len(serie) > 0:
+                    fecha_col_proy = fc
+                    break
+        if fecha_col_proy:
+            anio_base = int(pd.to_datetime(test_df[fecha_col_proy],
+                                           errors="coerce").dt.year.mode()[0])
+        else:
+            anio_base = 2025
+    except Exception:
+        anio_base = 2025
+
+    # COP base para proyección: todas las problemáticas del año base en df completo
+    try:
+        fecha_col_df = None
+        for fc in ["Fecha cancelación", "Fecha creación", "Entrada"]:
+            if fc in df.columns:
+                fecha_col_df = fc
+                break
+        if fecha_col_df:
+            mask_anio = pd.to_datetime(df[fecha_col_df],
+                                        errors="coerce").dt.year == anio_base
+            df_base_proy = df[(df["target"] == 1) & mask_anio]["total_cop"]
+        else:
+            df_base_proy = df[df["target"] == 1]["total_cop"]
+    except Exception:
+        df_base_proy = df[df["target"] == 1]["total_cop"]
+
+    cop_base_proy    = df_base_proy.sum()
+    cop_proyectado   = cop_base_proy * (1 + inflacion)
+    oportunidad_proy = cop_proyectado * recall_ob3
+    cop_no_id_proy   = cop_proyectado * (1 - recall_ob3)
 
     # KPIs financieros
     k1,k2,k3,k4 = st.columns(4)
@@ -1070,7 +1113,17 @@ with tab4:
 
     # Estacionalidad de cancelaciones
     st.markdown("#### Estacionalidad mensual de cancelaciones")
-    df["mes_cancel"] = df["Fecha cancelación"].dt.to_period("M").astype(str)
+    # Usar la mejor fecha disponible para estacionalidad
+    fecha_estac = next(
+        (c for c in ["Fecha cancelación", "Fecha creación", "Entrada"]
+         if c in df.columns), None
+    )
+    if fecha_estac:
+        df["mes_cancel"] = pd.to_datetime(
+            df[fecha_estac], errors="coerce"
+        ).dt.to_period("M").astype(str)
+    else:
+        df["mes_cancel"] = "Sin fecha"
     estac = df.groupby("mes_cancel").agg(
         total=("target","count"), prob=("target","sum")).reset_index()
     estac["tasa"] = (estac["prob"]/estac["total"]*100).round(1)
