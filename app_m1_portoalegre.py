@@ -447,8 +447,17 @@ def preparar_xy(train_df, test_df):
     """One-Hot Encoding + alineación de columnas — celda 37."""
     FEATURES_FINAL = FEATURES_NUM + FEATURES_GRUPALES + FEATURES_CAT
 
-    # Imputar NaN en columnas numéricas ANTES del encoding
-    # (pueden aparecer cuando fechas no parsean bien en el archivo del PMS)
+    # ── Eliminar columnas duplicadas antes de procesar ────────────────────────
+    train_df = train_df.loc[:, ~train_df.columns.duplicated()]
+    test_df  = test_df.loc[:, ~test_df.columns.duplicated()]
+
+    # ── Solo usar features que existan en el DataFrame ────────────────────────
+    feat_train = [f for f in FEATURES_FINAL if f in train_df.columns]
+    feat_test  = [f for f in FEATURES_FINAL if f in test_df.columns]
+    cat_train  = [c for c in FEATURES_CAT if c in train_df.columns]
+    cat_test   = [c for c in FEATURES_CAT if c in test_df.columns]
+
+    # ── Imputar NaN en columnas numéricas ─────────────────────────────────────
     for col in FEATURES_NUM + FEATURES_GRUPALES:
         if col in train_df.columns:
             mediana = train_df[col].median()
@@ -459,27 +468,43 @@ def preparar_xy(train_df, test_df):
             mediana = 0 if pd.isna(mediana) else mediana
             test_df[col] = test_df[col].fillna(mediana)
 
-    # Imputar NaN en columnas categóricas
+    # ── Imputar NaN en columnas categóricas ───────────────────────────────────
     for col in FEATURES_CAT:
         if col in train_df.columns:
             train_df[col] = train_df[col].fillna("Desconocido").astype(str)
         if col in test_df.columns:
             test_df[col] = test_df[col].fillna("Desconocido").astype(str)
 
-    train_enc = pd.get_dummies(train_df[FEATURES_FINAL + [TARGET]], columns=FEATURES_CAT, drop_first=True)
-    test_enc  = pd.get_dummies(test_df[FEATURES_FINAL  + [TARGET]], columns=FEATURES_CAT, drop_first=True)
+    # ── One-Hot Encoding ──────────────────────────────────────────────────────
+    cols_train = [f for f in feat_train if f in train_df.columns] + [TARGET]
+    cols_test  = [f for f in feat_test  if f in test_df.columns]  + [TARGET]
 
-    X_train = train_enc.drop(columns=[TARGET])
-    y_train = train_enc[TARGET]
-    X_test  = test_enc.drop(columns=[TARGET])
-    y_test  = test_enc[TARGET]
+    train_enc = pd.get_dummies(
+        train_df[[c for c in cols_train if c in train_df.columns]],
+        columns=cat_train, drop_first=True)
+    test_enc  = pd.get_dummies(
+        test_df[[c for c in cols_test if c in test_df.columns]],
+        columns=cat_test, drop_first=True)
 
-    # Alinear columnas y rellenar cualquier NaN residual con 0
+    # ── Eliminar duplicados que puedan surgir del OHE ─────────────────────────
+    train_enc = train_enc.loc[:, ~train_enc.columns.duplicated()]
+    test_enc  = test_enc.loc[:,  ~test_enc.columns.duplicated()]
+
+    X_train = train_enc.drop(columns=[TARGET], errors="ignore")
+    y_train = train_enc[TARGET] if TARGET in train_enc.columns else pd.Series(0, index=train_enc.index)
+    X_test  = test_enc.drop(columns=[TARGET], errors="ignore")
+    y_test  = test_enc[TARGET]  if TARGET in test_enc.columns  else pd.Series(0, index=test_enc.index)
+
+    # ── Alinear columnas: test debe tener exactamente las de train ────────────
+    # Eliminar duplicados antes del reindex para evitar el ValueError
+    X_train = X_train.loc[:, ~X_train.columns.duplicated()]
+    X_test  = X_test.loc[:,  ~X_test.columns.duplicated()]
+
     X_test  = X_test.reindex(columns=X_train.columns, fill_value=0)
     X_train = X_train.fillna(0)
     X_test  = X_test.fillna(0)
 
-    # Reemplazar infinitos si los hubiera (ej. divisiones en features derivadas)
+    # ── Reemplazar infinitos ───────────────────────────────────────────────────
     X_train = X_train.replace([np.inf, -np.inf], 0)
     X_test  = X_test.replace([np.inf, -np.inf], 0)
 
