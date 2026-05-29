@@ -138,16 +138,71 @@ st.markdown("""
 @st.cache_data(show_spinner=False)
 def cargar_datos(file_bytes: bytes) -> pd.DataFrame:
     """Carga el archivo XLS/XLSX del PMS Lobbybookings.
-    Maneja variaciones en nombres de columnas y formatos de exportación.
+    Prueba múltiples estrategias de lectura para máxima compatibilidad
+    con las exportaciones de Lobbybookings en distintos entornos.
     """
+    df = None
+    errores = []
+
+    # Estrategia 1: read_html (maneja .xls exportados como HTML por Lobbybookings)
     try:
         dfs = pd.read_html(io.BytesIO(file_bytes), encoding="latin-1")
-        df = dfs[0]
-    except Exception:
-        df = pd.read_excel(io.BytesIO(file_bytes))
+        if dfs and len(dfs[0]) > 0:
+            df = dfs[0]
+    except Exception as e:
+        errores.append(f"read_html latin-1: {e}")
+
+    # Estrategia 2: read_html utf-8
+    if df is None:
+        try:
+            dfs = pd.read_html(io.BytesIO(file_bytes), encoding="utf-8")
+            if dfs and len(dfs[0]) > 0:
+                df = dfs[0]
+        except Exception as e:
+            errores.append(f"read_html utf-8: {e}")
+
+    # Estrategia 3: openpyxl (xlsx)
+    if df is None:
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
+        except Exception as e:
+            errores.append(f"openpyxl: {e}")
+
+    # Estrategia 4: xlrd (xls legacy)
+    if df is None:
+        try:
+            df = pd.read_excel(io.BytesIO(file_bytes), engine="xlrd")
+        except Exception as e:
+            errores.append(f"xlrd: {e}")
+
+    # Estrategia 5: csv como último recurso
+    if df is None:
+        try:
+            for sep in [",", ";", "\t"]:
+                try:
+                    df = pd.read_csv(
+                        io.BytesIO(file_bytes), sep=sep,
+                        encoding="latin-1", on_bad_lines="skip"
+                    )
+                    if len(df.columns) > 3:
+                        break
+                except Exception:
+                    continue
+        except Exception as e:
+            errores.append(f"csv: {e}")
+
+    if df is None or len(df) == 0:
+        raise ValueError(
+            f"No se pudo leer el archivo. Intentos fallidos: {errores}. "
+            f"Asegúrate de subir el archivo exportado desde "
+            f"Lobbybookings → Reservas → Canceladas → Exportar a Excel."
+        )
 
     # ── Limpiar nombres de columna: quitar espacios y saltos de línea ─────────
     df.columns = [str(c).strip().replace("\n", " ").replace("\r", "") for c in df.columns]
+
+    # ── Eliminar filas completamente vacías ────────────────────────────────────
+    df = df.dropna(how="all").reset_index(drop=True)
 
     # ── Mapa de renombrado flexible (variantes del PMS Lobbybookings) ─────────
     renombrar = {
@@ -567,12 +622,13 @@ opt_thr  = thr_r[opt_idx]
 # ══════════════════════════════════════════════════════════════════════════════
 # TABS PRINCIPALES
 # ══════════════════════════════════════════════════════════════════════════════
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Evaluación del modelo",
     "🎯 Scoring de reservas",
     "💰 Impacto financiero",
     "📈 Análisis exploratorio",
     "⚙️ Detalle técnico",
+    "🚨 Plan de Acción",
 ])
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1014,4 +1070,372 @@ with tab5:
         canal_tasa[["Canal","tasa_%","score_label"]].sort_values("tasa_%",ascending=False),
         use_container_width=True, hide_index=True,
         column_config={"tasa_%": "Tasa problemática (%)", "score_label": "Score riesgo canal"}
+    )
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 6 — PLAN DE ACCIÓN OPERATIVO
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with tab6:
+    st.markdown("### Plan de Acción Operativo")
+    st.caption(
+        "Accionables generados automáticamente desde el scoring · "
+        "Priorizados por COP en riesgo según el Hallazgo H3 del proyecto"
+    )
+
+    # ── Canales de alto riesgo definidos en el documento ─────────────────────
+    CANALES_ALTO_RIESGO = ["Booking Engine", "WhatsApp Recepción", "WhatsApp pag web"]
+    CANALES_MEDIO_RIESGO = ["Redes sociales", "Venta Puerta", "Booking.com",
+                             "Convenio con empresa", "Desconocido"]
+
+    # ── Reconstruir df_score si no está disponible en este scope ─────────────
+    df_accion = test_df[["Entrada", "Canal", "Habitación",
+                          "total_cop", "mes_entrada", "target"]].copy().reset_index(drop=True)
+    df_accion["score"]    = np.round(y_proba, 4)
+    df_accion["umbral"]   = df_accion["mes_entrada"].apply(umbral_por_temporada)
+    df_accion["riesgo"]   = df_accion.apply(
+        lambda r: clasificar_riesgo(r["score"], r["mes_entrada"]), axis=1)
+    df_accion["temporada"]= df_accion["mes_entrada"].apply(
+        lambda m: "Alta" if m in MESES_ALTA else
+                  "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
+    df_accion["Entrada_dt"] = pd.to_datetime(df_accion["Entrada"], dayfirst=True, errors="coerce")
+    df_accion["dias_para_entrada"] = (
+        df_accion["Entrada_dt"] - pd.Timestamp.now()
+    ).dt.days.clip(lower=0)
+
+    # Solo reservas en alerta (score >= umbral de temporada)
+    df_alerta = df_accion[df_accion["riesgo"].isin(["Alto", "Medio"])].copy()
+    df_alerta = df_alerta.sort_values("total_cop", ascending=False)
+
+    # ── KPIs del plan de acción ────────────────────────────────────────────────
+    st.markdown("---")
+    k1, k2, k3, k4 = st.columns(4)
+    cop_en_alerta   = df_alerta["total_cop"].sum()
+    n_contacto      = (df_alerta["riesgo"] == "Alto").sum()
+    n_reasignacion  = (
+        (df_alerta["riesgo"] == "Alto") &
+        (df_alerta["temporada"] == "Alta")
+    ).sum()
+    n_canal_estricto = df_alerta["Canal"].isin(CANALES_ALTO_RIESGO).sum()
+
+    k1.markdown(f"""<div class="metric-card metric-warn">
+        <div class="value">{len(df_alerta)}</div>
+        <div class="label">Reservas en alerta</div>
+        <div class="sub">Requieren intervención hoy</div>
+    </div>""", unsafe_allow_html=True)
+    k2.markdown(f"""<div class="metric-card metric-warn">
+        <div class="value">{formatear_cop(cop_en_alerta)}</div>
+        <div class="label">COP en riesgo</div>
+        <div class="sub">En reservas alertadas</div>
+    </div>""", unsafe_allow_html=True)
+    k3.markdown(f"""<div class="metric-card metric-info">
+        <div class="value">{n_contacto}</div>
+        <div class="label">Contacto proactivo</div>
+        <div class="sub">Llamar antes del check-in</div>
+    </div>""", unsafe_allow_html=True)
+    k4.markdown(f"""<div class="metric-card metric-info">
+        <div class="value">{n_canal_estricto}</div>
+        <div class="label">Canal estricto</div>
+        <div class="sub">Booking Engine / WhatsApp</div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACCIÓN 1 — CONTACTO PROACTIVO
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("""
+    <div style="border-left:5px solid #1E2761;padding:.6rem 1.2rem;
+                background:#F0F4FB;border-radius:0 10px 10px 0;margin-bottom:1rem;">
+      <span style="font-size:.75rem;font-weight:700;color:#4FA3E0;
+                   letter-spacing:.1em;">ACCIÓN 01</span>
+      <h4 style="margin:.2rem 0;color:#1E2761;">📞 Contacto Proactivo</h4>
+      <p style="margin:0;color:#6B7280;font-size:.9rem;">
+        Llamar o escribir al huésped antes del check-in para confirmar la reserva
+        y reducir no-shows · <b>Prioridad: mayor COP en riesgo primero</b>
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    df_contacto = df_alerta[df_alerta["riesgo"] == "Alto"].copy()
+    df_contacto = df_contacto.sort_values("total_cop", ascending=False)
+
+    if len(df_contacto) == 0:
+        st.info("✅ No hay reservas de riesgo Alto en el conjunto evaluado.")
+    else:
+        # Mensaje sugerido de contacto
+        col_t, col_msg = st.columns([1, 1.5])
+        with col_t:
+            st.markdown(f"**{len(df_contacto)} reservas para contactar**")
+            tabla_c = df_contacto[["Entrada", "Canal", "Habitación",
+                                    "total_cop", "score", "temporada",
+                                    "dias_para_entrada"]].copy()
+            tabla_c.columns = ["Entrada", "Canal", "Habitación",
+                                "COP", "Score", "Temporada", "Días p/entrada"]
+            tabla_c["COP"]   = tabla_c["COP"].apply(
+                lambda x: f"$ {x:,.0f}".replace(",", "."))
+            tabla_c["Score"] = tabla_c["Score"].map("{:.3f}".format)
+            tabla_c["Entrada"] = pd.to_datetime(
+                tabla_c["Entrada"], dayfirst=True, errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+            st.dataframe(tabla_c.reset_index(drop=True),
+                         use_container_width=True, height=280)
+
+        with col_msg:
+            st.markdown("**Mensaje sugerido para WhatsApp / llamada:**")
+            dias_ejemplo = int(df_contacto["dias_para_entrada"].iloc[0]) if len(df_contacto) > 0 else 3
+            st.markdown(f"""
+            <div style="background:#FFF8EB;border:1px solid #F5B642;border-radius:10px;
+                        padding:1rem 1.2rem;font-size:.88rem;color:#374151;
+                        font-family:'Courier New',monospace;white-space:pre-wrap;">
+Estimado/a [nombre del huésped],
+
+Le contactamos desde el Hotel Portoalegre para
+confirmar su reserva programada para el
+[fecha de entrada].
+
+Por favor responda este mensaje o llámenos al
+[teléfono del hotel] para confirmar su llegada.
+
+De no recibir confirmación en las próximas
+24 horas, procederemos a liberar la habitación.
+
+¡Esperamos recibirle pronto!
+Hotel Portoalegre · Coveñas
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Exportar lista de contacto
+            csv_c = df_contacto[["Entrada","Canal","Habitación",
+                                  "total_cop","score"]].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇ Descargar lista de contacto (.csv)",
+                csv_c, "accion01_contacto_proactivo.csv", "text/csv"
+            )
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACCIÓN 2 — REASIGNACIÓN DE HABITACIÓN
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("""
+    <div style="border-left:5px solid #1AAE9F;padding:.6rem 1.2rem;
+                background:#F0FBF8;border-radius:0 10px 10px 0;margin-bottom:1rem;">
+      <span style="font-size:.75rem;font-weight:700;color:#1AAE9F;
+                   letter-spacing:.1em;">ACCIÓN 02</span>
+      <h4 style="margin:.2rem 0;color:#1E2761;">🏨 Reasignación de Habitación</h4>
+      <p style="margin:0;color:#6B7280;font-size:.9rem;">
+        En <b>temporada alta</b>, las habitaciones de reservas en riesgo alto se
+        liberan para reasignación a tarifa premium · Protege el RevPAR
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    df_reasig = df_alerta[
+        (df_alerta["riesgo"] == "Alto") &
+        (df_alerta["temporada"] == "Alta")
+    ].copy().sort_values("total_cop", ascending=False)
+
+    if len(df_reasig) == 0:
+        st.info("✅ No hay reservas de riesgo Alto en temporada Alta en el conjunto evaluado.")
+    else:
+        col_r1, col_r2 = st.columns([1.5, 1])
+        with col_r1:
+            st.markdown(f"**{len(df_reasig)} habitaciones candidatas a reasignación en temporada Alta**")
+
+            # Agrupar por tipo de habitación
+            hab_group = df_reasig.groupby("Habitación").agg(
+                n=("total_cop", "count"),
+                cop_total=("total_cop", "sum"),
+                score_prom=("score", "mean")
+            ).reset_index().sort_values("cop_total", ascending=False)
+            hab_group["COP total"] = hab_group["cop_total"].apply(
+                lambda x: f"$ {x:,.0f}".replace(",", "."))
+            hab_group["Score prom."] = hab_group["score_prom"].map("{:.3f}".format)
+            st.dataframe(
+                hab_group[["Habitación", "n", "COP total", "Score prom."]].rename(
+                    columns={"n": "Reservas en riesgo"}),
+                use_container_width=True, hide_index=True
+            )
+
+        with col_r2:
+            st.markdown("**Protocolo de reasignación:**")
+            cop_liberado = df_reasig["total_cop"].sum()
+            st.markdown(f"""
+            <div style="background:#CFEDE6;border-radius:10px;padding:1rem 1.2rem;
+                        font-size:.88rem;color:#0C5C4F;">
+            <b>COP potencialmente liberado</b><br>
+            <span style="font-size:1.4rem;font-weight:700;">
+            {formatear_cop(cop_liberado)}</span><br><br>
+            <b>Pasos:</b><br>
+            1️⃣ Identificar las habitaciones de esta lista<br>
+            2️⃣ Activar la reserva de lista de espera si existe<br>
+            3️⃣ Publicar disponibilidad en Booking.com con tarifa +15%<br>
+            4️⃣ Si no hay lista de espera, priorizar venta puerta en los próximos 3 días<br>
+            5️⃣ Registrar la acción en Lobbybookings
+            </div>
+            """, unsafe_allow_html=True)
+
+        csv_r = df_reasig[["Entrada","Habitación","Canal",
+                            "total_cop","score"]].to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇ Descargar lista de reasignación (.csv)",
+            csv_r, "accion02_reasignacion_habitacion.csv", "text/csv"
+        )
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACCIÓN 3 — POLÍTICA POR CANAL
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("""
+    <div style="border-left:5px solid #F5B642;padding:.6rem 1.2rem;
+                background:#FFFBF0;border-radius:0 10px 10px 0;margin-bottom:1rem;">
+      <span style="font-size:.75rem;font-weight:700;color:#F5B642;
+                   letter-spacing:.1em;">ACCIÓN 03</span>
+      <h4 style="margin:.2rem 0;color:#1E2761;">⚠️ Política por Canal de Alto Riesgo</h4>
+      <p style="margin:0;color:#6B7280;font-size:.9rem;">
+        Canales con tasa problemática alta reciben condiciones más estrictas:
+        <b>depósito anticipado</b> o <b>confirmación de pago</b> obligatoria
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Construir tabla de políticas por canal desde el scoring
+    canal_scoring = df_accion.groupby("Canal").agg(
+        n_total=("score", "count"),
+        n_alerta=("riesgo", lambda x: (x.isin(["Alto","Medio"])).sum()),
+        score_prom=("score", "mean"),
+        cop_en_riesgo=("total_cop", lambda x: x[
+            df_accion.loc[x.index, "riesgo"].isin(["Alto","Medio"])].sum())
+    ).reset_index()
+    canal_scoring["tasa_alerta_%"] = (
+        canal_scoring["n_alerta"] / canal_scoring["n_total"] * 100
+    ).round(1)
+    canal_scoring["score_riesgo"] = canal_scoring["Canal"].map(canal_map).fillna(2).astype(int)
+
+    def politica_canal(canal, score):
+        if canal in CANALES_ALTO_RIESGO or score == 3:
+            return "🔴 Depósito 50% + confirmación de pago obligatoria"
+        elif score == 2:
+            return "🟡 Solicitar confirmación por WhatsApp 48h antes"
+        else:
+            return "🟢 Gestión estándar"
+
+    def accion_canal(canal, score):
+        if canal == "Booking Engine":
+            return "Revisar pasarela de cobro · retry policy · pre-autorización"
+        elif canal in CANALES_ALTO_RIESGO or score == 3:
+            return "Cobrar depósito anticipado antes de confirmar reserva"
+        elif score == 2:
+            return "Enviar recordatorio de confirmación 48h antes del check-in"
+        else:
+            return "Sin acción adicional requerida"
+
+    canal_scoring["Política"]  = canal_scoring.apply(
+        lambda r: politica_canal(r["Canal"], r["score_riesgo"]), axis=1)
+    canal_scoring["Acción operativa"] = canal_scoring.apply(
+        lambda r: accion_canal(r["Canal"], r["score_riesgo"]), axis=1)
+    canal_scoring["COP en riesgo"] = canal_scoring["cop_en_riesgo"].apply(
+        lambda x: f"$ {x:,.0f}".replace(",", "."))
+    canal_scoring["Score prom."] = canal_scoring["score_prom"].map("{:.3f}".format)
+
+    canal_scoring = canal_scoring.sort_values("score_riesgo", ascending=False)
+
+    st.dataframe(
+        canal_scoring[[
+            "Canal", "n_total", "tasa_alerta_%",
+            "COP en riesgo", "Score prom.", "Política", "Acción operativa"
+        ]].rename(columns={
+            "n_total":       "Total reservas",
+            "tasa_alerta_%": "% en alerta",
+        }),
+        use_container_width=True,
+        hide_index=True,
+        height=350,
+    )
+
+    # Booking Engine — alerta especial (Hallazgo H1)
+    n_be = df_accion[df_accion["Canal"] == "Booking Engine"].shape[0]
+    if n_be > 0:
+        st.markdown(f"""
+        <div class="alert-alta">
+        <b>⚠️ Hallazgo H1 — Booking Engine ({n_be} reservas detectadas):</b><br>
+        El {canal_scoring[canal_scoring['Canal']=='Booking Engine']['tasa_alerta_%'].values[0] if 'Booking Engine' in canal_scoring['Canal'].values else '~62'}%
+        de cancelaciones de este canal corresponde a un <b>problema técnico de pasarela de cobro</b>,
+        no al perfil del huésped. Acción recomendada: <b>retry policy + pre-autorización de pago</b>
+        independiente del modelo predictivo.
+        </div>
+        """, unsafe_allow_html=True)
+
+    csv_canal = canal_scoring[[
+        "Canal","tasa_alerta_%","COP en riesgo","Política","Acción operativa"
+    ]].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇ Descargar política por canal (.csv)",
+        csv_canal, "accion03_politica_por_canal.csv", "text/csv"
+    )
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RESUMEN EJECUTIVO DEL DÍA
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 📋 Resumen ejecutivo para recepción")
+    st.markdown("""
+    <div style="background:#1E2761;border-radius:12px;padding:1.5rem 2rem;color:white;">
+      <p style="font-size:.75rem;font-weight:700;letter-spacing:.12em;
+                color:#9CB4D9;margin:0 0 .5rem 0;">
+        INSTRUCCIONES DE HOY PARA RECEPCIÓN
+      </p>
+    """, unsafe_allow_html=True)
+
+    resumen_cols = st.columns(3)
+    acciones = [
+        ("📞", "Contacto Proactivo",
+         f"Llamar a las {len(df_contacto)} reservas de riesgo Alto antes del check-in. "
+         f"Priorizar las de mayor COP ({formatear_cop(df_contacto['total_cop'].max()) if len(df_contacto)>0 else 'N/A'} primero)."),
+        ("🏨", "Reasignación",
+         f"Identificar {len(df_reasig)} habitaciones en riesgo durante temporada Alta. "
+         f"Activar lista de espera o publicar en Booking.com a tarifa +15%."),
+        ("⚠️", "Canal estricto",
+         f"Exigir depósito anticipado o confirmación de pago a las {n_canal_estricto} "
+         f"reservas provenientes de Booking Engine y WhatsApp. Revisar pasarela de cobro."),
+    ]
+    for col, (icon, titulo, desc) in zip(resumen_cols, acciones):
+        col.markdown(f"""
+        <div style="background:rgba(255,255,255,.08);border-radius:8px;
+                    padding:1rem;height:100%;">
+          <div style="font-size:1.5rem;">{icon}</div>
+          <div style="font-weight:700;font-size:.95rem;margin:.3rem 0;">{titulo}</div>
+          <div style="font-size:.82rem;color:#9CB4D9;line-height:1.5;">{desc}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Exportar plan completo
+    st.markdown(" ")
+    df_plan_completo = df_alerta[[
+        "Entrada", "Canal", "Habitación", "total_cop",
+        "score", "riesgo", "temporada", "dias_para_entrada"
+    ]].copy()
+    df_plan_completo["accion_01_contacto"] = df_plan_completo["riesgo"].apply(
+        lambda r: "SÍ" if r == "Alto" else "NO")
+    df_plan_completo["accion_02_reasignar"] = df_plan_completo.apply(
+        lambda r: "SÍ" if r["riesgo"]=="Alto" and r["temporada"]=="Alta" else "NO", axis=1)
+    df_plan_completo["accion_03_deposito"] = df_plan_completo["Canal"].apply(
+        lambda c: "SÍ" if c in CANALES_ALTO_RIESGO else "NO")
+    df_plan_completo["COP"] = df_plan_completo["total_cop"].apply(
+        lambda x: f"$ {x:,.0f}".replace(",", "."))
+    df_plan_completo["score"] = df_plan_completo["score"].map("{:.3f}".format)
+    df_plan_completo["Entrada"] = pd.to_datetime(
+        df_plan_completo["Entrada"], dayfirst=True, errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
+
+    csv_plan = df_plan_completo.drop(columns=["total_cop"]).to_csv(
+        index=False).encode("utf-8")
+    st.download_button(
+        "⬇ Descargar Plan de Acción completo (.csv)",
+        csv_plan, "plan_accion_completo_portoalegre.csv", "text/csv",
+        use_container_width=True
     )
