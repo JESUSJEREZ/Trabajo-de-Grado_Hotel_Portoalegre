@@ -544,15 +544,32 @@ def formatear_cop(v: float) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("## 🏨 M1 · Portoalegre")
     st.markdown("**Propensión a Cancelación Problemática**")
     st.markdown("---")
 
-    archivo = st.file_uploader(
-        "📂 Cargar reservas_canceladas.xls",
+    st.markdown("### 📚 Paso 1 — Entrenamiento")
+    st.caption("Histórico con etiquetas reales (target conocido)")
+    archivo_canceladas = st.file_uploader(
+        "Reservas canceladas (.xls/.xlsx)",
         type=["xls", "xlsx"],
-        help="Exporta desde Lobbybookings: Reservas → Canceladas → Exportar a Excel",
+        key="canceladas",
+        help="Lobbybookings → Reservas → Canceladas → Exportar a Excel. "
+             "Este archivo tiene la columna Motivo con No show, Pago rechazado, etc.",
+    )
+
+    st.markdown("### 🎯 Paso 2 — Scoring diario")
+    st.caption("Reservas activas a puntuar hoy (opcional)")
+    archivo_activas = st.file_uploader(
+        "Reservas activas (.xls/.xlsx)",
+        type=["xls", "xlsx"],
+        key="activas",
+        help="Lobbybookings → Reservas → Activas → Exportar a Excel. "
+             "El modelo predice cuáles tienen riesgo de cancelación problemática.",
     )
 
     st.markdown("### ⚙️ Configuración del modelo")
@@ -560,13 +577,15 @@ with st.sidebar:
         "Modo de entrenamiento",
         ["Rápido (params fijos)", "Optimizado (GridSearchCV 5-fold)"],
         index=0,
-        help="Rápido usa los hiperparámetros del modelo final del notebook. Optimizado hace GridSearchCV completo (~3 min).",
+        help="Rápido usa los hiperparámetros del modelo final del notebook. "
+             "Optimizado hace GridSearchCV completo (~3 min).",
     )
     modo = "rapido" if "Rápido" in modo_entrenamiento else "optimizado"
 
     st.markdown("### 📅 Proyección")
-    anio_proyeccion = st.number_input("Año proyección", min_value=2025, max_value=2030, value=2026)
-    inflacion       = st.slider("Inflación anual (%)", 0.0, 10.0, 2.5, 0.1) / 100
+    anio_proyeccion = st.number_input(
+        "Año proyección", min_value=2025, max_value=2030, value=2026)
+    inflacion = st.slider("Inflación anual (%)", 0.0, 10.0, 2.5, 0.1) / 100
 
     st.markdown("---")
     st.markdown("""
@@ -576,6 +595,9 @@ with st.sidebar:
     Tutor: Tirado Cifuentes · 2026
     </small>
     """, unsafe_allow_html=True)
+
+# alias para compatibilidad con el resto del código
+archivo = archivo_canceladas
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HEADER
@@ -600,50 +622,53 @@ st.markdown("""
 if archivo is None:
     st.markdown("""
     <div class="alert-info">
-    <b>📋 Cómo usar esta app</b><br>
-    1. Exporta las reservas canceladas desde <b>Lobbybookings → Reservas → Canceladas → Exportar Excel</b><br>
-    2. Sube el archivo .xls en el panel izquierdo<br>
-    3. Selecciona el modo de entrenamiento<br>
-    4. El modelo se entrena, evalúa y puntúa todas las reservas automáticamente
+    <b>📋 Cómo usar esta app</b><br><br>
+    <b>Paso 1 — Entrenamiento (obligatorio)</b><br>
+    Sube el archivo de <b>Reservas Canceladas</b> desde Lobbybookings → Reservas → Canceladas → Exportar Excel.<br>
+    Este archivo tiene el historial con etiquetas reales (No show, Pago rechazado, etc.)
+    y se usa para entrenar el modelo.<br><br>
+    <b>Paso 2 — Scoring diario (opcional)</b><br>
+    Sube el archivo de <b>Reservas Activas</b> desde Lobbybookings → Reservas → Activas → Exportar Excel.<br>
+    El modelo entrenado predice cuáles de esas reservas tienen riesgo de convertirse en
+    cancelación problemática <i>antes de que ocurra</i>.
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### 🎯 Umbrales de intervención por temporada")
+    st.markdown("### 🎯 Arquitectura del modelo en producción")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown("""<div class="metric-card metric-warn">
-        <div class="value">0.25</div>
-        <div class="label">Temporada Alta</div>
-        <div class="sub">Jun·Jul·Ago·Dic·Ene — máxima sensibilidad</div>
+        st.markdown("""<div class="metric-card metric-info">
+        <div class="value">📚</div>
+        <div class="label">Reservas Canceladas</div>
+        <div class="sub">Histórico con Motivo conocido → entrena el modelo</div>
         </div>""", unsafe_allow_html=True)
     with c2:
-        st.markdown("""<div class="metric-card metric-warn">
-        <div class="value">0.30</div>
-        <div class="label">Meses Precursores</div>
-        <div class="sub">Nov · May — umbral intermedio</div>
+        st.markdown("""<div class="metric-card metric-info">
+        <div class="value">🌲</div>
+        <div class="label">Random Forest</div>
+        <div class="sub">SMOTE · Split 70/30 · Umbrales dinámicos</div>
         </div>""", unsafe_allow_html=True)
     with c3:
-        st.markdown("""<div class="metric-card metric-ok">
-        <div class="value">0.45</div>
-        <div class="label">Media / Baja</div>
-        <div class="sub">Resto del año — umbral conservador</div>
+        st.markdown("""<div class="metric-card metric-warn">
+        <div class="value">🎯</div>
+        <div class="label">Reservas Activas</div>
+        <div class="sub">Score 0–1 por reserva → acción preventiva</div>
         </div>""", unsafe_allow_html=True)
     st.stop()
 
-# ── Cargar y preparar datos ────────────────────────────────────────────────────
-with st.spinner("📂 Cargando datos del PMS..."):
+# ══════════════════════════════════════════════════════════════════════════════
+# PASO 1: CARGAR Y PREPARAR DATOS DE ENTRENAMIENTO (CANCELADAS)
+# ══════════════════════════════════════════════════════════════════════════════
+with st.spinner("📂 Cargando reservas canceladas (entrenamiento)..."):
     df_raw = cargar_datos(archivo.read())
 
-    # ── Diagnóstico: mostrar columnas si falta alguna clave ───────────────────
-    cols_requeridas = ["Motivo", "Entrada", "Salida", "Fecha cancelación", "Fecha creación"]
-    cols_faltantes  = [c for c in cols_requeridas if c not in df_raw.columns]
+    cols_faltantes = [c for c in ["Motivo", "Entrada", "Salida", "Fecha creación"]
+                      if c not in df_raw.columns]
     if cols_faltantes:
-        st.warning(f"⚠️ Columnas no encontradas: **{cols_faltantes}**  \n"
-                   f"Columnas detectadas en el archivo: `{list(df_raw.columns)}`  \n"
-                   f"Verifica que el archivo sea el export correcto de Lobbybookings.")
+        st.warning(f"⚠️ Columnas no encontradas en canceladas: **{cols_faltantes}**  \n"
+                   f"Columnas detectadas: `{list(df_raw.columns)}`")
 
-    # ── Si no hay Fecha creación, usar Fecha cancelación como proxy ───────────
     if "Fecha creación" not in df_raw.columns and "Fecha cancelación" in df_raw.columns:
         df_raw["Fecha creación"] = df_raw["Fecha cancelación"]
 
@@ -652,43 +677,40 @@ with st.spinner("📂 Cargando datos del PMS..."):
     df = feature_engineering_base(df)
 
 n_total  = len(df)
-n_prob   = df["target"].sum()
+n_prob   = int(df["target"].sum())
 pct_prob = n_prob / n_total * 100
 
-st.success(f"✅ Datos cargados: **{n_total:,} reservas** | **{n_prob:,} problemáticas** ({pct_prob:.1f}%)")
+st.success(
+    f"✅ Canceladas cargadas: **{n_total:,} reservas** | "
+    f"**{n_prob:,} problemáticas** ({pct_prob:.1f}%) — base de entrenamiento lista"
+)
 
-# ── Split temporal 70/30 ───────────────────────────────────────────────────────
+# ── Split temporal 70/30 sobre canceladas ─────────────────────────────────────
 df_sorted = df.sort_values("Fecha creación").reset_index(drop=True)
 split_idx = int(len(df_sorted) * 0.70)
 train_df  = df_sorted.iloc[:split_idx].copy()
 test_df   = df_sorted.iloc[split_idx:].copy()
 fecha_corte = test_df["Fecha creación"].min().date()
 
-# ── Features grupales post-split (anti-leakage) ────────────────────────────────
-# cancelaciones_previas_huesped en test = máximo acumulado en train
+# Features grupales post-split (anti-leakage)
 if "huésped" in train_df.columns:
     conteo_train = train_df.groupby("huésped")["cancelaciones_previas_huesped"].max()
-    test_df["cancelaciones_previas_huesped"] = test_df["huésped"].map(conteo_train).fillna(0)
+    test_df["cancelaciones_previas_huesped"] = (
+        test_df["huésped"].map(conteo_train).fillna(0))
 
 train_df, test_df, canal_map = calcular_score_canal(train_df, test_df)
-
-# ── Preparar X/y ──────────────────────────────────────────────────────────────
 X_train, y_train, X_test, y_test = preparar_xy(train_df, test_df)
 
-with st.spinner(f"🌲 Entrenando Random Forest ({modo})... esto puede tomar unos segundos."):
-    # column_hash invalida el caché si cambia la estructura de columnas del archivo
+with st.spinner(f"🌲 Entrenando Random Forest ({modo})..."):
     column_hash = str(sorted(X_train.columns.tolist()))
     modelo, params_usados = entrenar_modelo(X_train, y_train, modo, column_hash)
 
-# ── Predicciones en test ───────────────────────────────────────────────────────
-# Forzar que X_test tenga exactamente las columnas con las que el modelo fue entrenado
-# (el modelo sklearn guarda feature_names_in_ internamente)
+# Alinear columnas con el modelo entrenado
 try:
     feature_names_model = modelo.named_steps["clf"].feature_names_in_
     X_test  = X_test.reindex(columns=feature_names_model, fill_value=0)
     X_train = X_train.reindex(columns=feature_names_model, fill_value=0)
 except AttributeError:
-    # Si el modelo no tiene feature_names_in_, alinear con X_train directamente
     X_test  = X_test.reindex(columns=X_train.columns, fill_value=0)
 
 X_test  = X_test.fillna(0).replace([np.inf, -np.inf], 0)
@@ -706,17 +728,100 @@ cm = confusion_matrix(y_test, y_pred)
 tn, fp, fn, tp = cm.ravel()
 precision_pos = tp / (tp + fp) if (tp + fp) > 0 else 0
 
-# Gap train
 y_train_pred  = modelo.predict(X_train)
 y_train_proba = modelo.predict_proba(X_train)[:, 1]
 auc_train = roc_auc_score(y_train, y_train_proba)
 gap_auc   = auc_train - auc
 
-# Umbral óptimo Youden
 fpr_r, tpr_r, thr_r = roc_curve(y_test, y_proba)
-j_stat   = tpr_r - fpr_r
-opt_idx  = np.argmax(j_stat)
-opt_thr  = thr_r[opt_idx]
+j_stat  = tpr_r - fpr_r
+opt_idx = np.argmax(j_stat)
+opt_thr = thr_r[opt_idx]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PASO 2: SCORING DE RESERVAS ACTIVAS (si se subió el archivo)
+# ══════════════════════════════════════════════════════════════════════════════
+df_activas_scored = None
+
+if archivo_activas is not None:
+    with st.spinner("🎯 Aplicando modelo a reservas activas..."):
+        try:
+            df_act_raw = cargar_datos(archivo_activas.read())
+
+            # Las activas NO tienen Motivo real → target=0 siempre (score se predice)
+            if "Fecha creación" not in df_act_raw.columns:
+                for fc in ["Fecha cancelación", "Entrada"]:
+                    if fc in df_act_raw.columns:
+                        df_act_raw["Fecha creación"] = df_act_raw[fc]
+                        break
+            if "Fecha creación" not in df_act_raw.columns:
+                df_act_raw["Fecha creación"] = pd.Timestamp.now()
+
+            # Motivo = "Cancelación oportuna" (desconocido, no se usa para target real)
+            if "Motivo" not in df_act_raw.columns:
+                df_act_raw["Motivo"] = "Cancelación oportuna del cliente"
+
+            df_act = parsear_fechas(df_act_raw.copy())
+            df_act = construir_target(df_act)   # target=0 para todas
+            df_act = feature_engineering_base(df_act)
+
+            # cancelaciones_previas desde el historial de canceladas
+            if "huésped" in df_act.columns and "huésped" in train_df.columns:
+                df_act["cancelaciones_previas_huesped"] = (
+                    df_act["huésped"].map(conteo_train).fillna(0))
+
+            # score_riesgo_canal desde el mapa aprendido en train
+            df_act["score_riesgo_canal"] = (
+                df_act["Canal"].map(canal_map).fillna(2).astype(int))
+
+            # Preparar features para scoring
+            FEATURES_FINAL = FEATURES_NUM + FEATURES_GRUPALES + FEATURES_CAT
+            for col in FEATURES_CAT:
+                if col not in df_act.columns:
+                    df_act[col] = "Desconocido"
+                df_act[col] = df_act[col].fillna("Desconocido").astype(str)
+
+            df_act_enc = pd.get_dummies(
+                df_act[[c for c in FEATURES_FINAL if c in df_act.columns]],
+                columns=[c for c in FEATURES_CAT if c in df_act.columns],
+                drop_first=True
+            )
+
+            # Alinear con columnas del modelo
+            try:
+                feat_names = modelo.named_steps["clf"].feature_names_in_
+                X_act = df_act_enc.reindex(columns=feat_names, fill_value=0)
+            except AttributeError:
+                X_act = df_act_enc.reindex(columns=X_train.columns, fill_value=0)
+
+            X_act = X_act.fillna(0).replace([np.inf, -np.inf], 0)
+
+            # Scores
+            scores_act  = modelo.predict_proba(X_act)[:, 1]
+            df_activas_scored = df_act_raw.copy().reset_index(drop=True)
+            df_activas_scored["score"]    = np.round(scores_act, 4)
+            df_activas_scored["mes_ent"]  = pd.to_datetime(
+                df_activas_scored.get("Entrada", pd.NaT), errors="coerce").dt.month.fillna(6).astype(int)
+            df_activas_scored["umbral"]   = df_activas_scored["mes_ent"].apply(
+                umbral_por_temporada)
+            df_activas_scored["riesgo"]   = df_activas_scored.apply(
+                lambda r: clasificar_riesgo(r["score"], r["mes_ent"]), axis=1)
+            df_activas_scored["temporada"]= df_activas_scored["mes_ent"].apply(
+                lambda m: "Alta" if m in MESES_ALTA else
+                          "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
+
+            n_act_alto  = (df_activas_scored["riesgo"]=="Alto").sum()
+            n_act_medio = (df_activas_scored["riesgo"]=="Medio").sum()
+            n_act_bajo  = (df_activas_scored["riesgo"]=="Bajo").sum()
+
+            st.info(
+                f"🎯 Reservas activas scored: **{len(df_activas_scored):,}** · "
+                f"🔴 Alto: {n_act_alto} · 🟡 Medio: {n_act_medio} · "
+                f"🟢 Bajo: {n_act_bajo}"
+            )
+        except Exception as e:
+            st.error(f"❌ Error al procesar reservas activas: {e}")
+            df_activas_scored = None
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TABS PRINCIPALES
@@ -805,14 +910,64 @@ with tab1:
 # TAB 2 — SCORING
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 with tab2:
-    st.markdown("### Scoring de reservas del conjunto de prueba")
-    st.caption("Clasificación con umbrales dinámicos por temporada: Alta 0.25 · Precursor 0.30 · Media/Baja 0.45")
+    # ── Si hay reservas activas → scoring operativo ───────────────────────────
+    if df_activas_scored is not None:
+        st.markdown("### 🎯 Scoring de reservas ACTIVAS")
+        st.caption(
+            "Modelo entrenado con histórico de canceladas · "
+            "Aplicado a reservas activas de hoy · "
+            "Umbrales: Alta 0.25 · Precursor 0.30 · Media/Baja 0.45"
+        )
+        st.markdown("""
+        <div class="alert-ok">
+        <b>Modo producción activo</b> — El modelo fue entrenado con el historial de
+        cancelaciones problemáticas y está prediciendo el riesgo de las reservas
+        activas actuales <i>antes de que ocurra la cancelación</i>.
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Construir tabla de scoring — usar fecha disponible con fallback
-    fecha_col_score = next(
-        (c for c in ["Fecha cancelación", "Fecha creación", "Entrada"]
-         if c in test_df.columns), None
-    )
+        df_score = df_activas_scored.copy()
+        fuente_score = "activas"
+
+    else:
+        # ── Sin activas → scoring sobre test de canceladas (modo validación) ──
+        st.markdown("### Scoring — conjunto de prueba (canceladas)")
+        st.caption(
+            "💡 Sube el archivo de **Reservas Activas** en el panel izquierdo "
+            "para ver el scoring operativo diario sobre reservas reales."
+        )
+        st.markdown("""
+        <div class="alert-info">
+        <b>Modo validación</b> — Mostrando el scoring sobre el 30% de reservas
+        canceladas reservadas para prueba. Para el scoring operativo del día,
+        sube el archivo de reservas activas en el Paso 2 del panel izquierdo.
+        </div>
+        """, unsafe_allow_html=True)
+
+        fecha_col_score = next(
+            (c for c in ["Fecha cancelación", "Fecha creación", "Entrada"]
+             if c in test_df.columns), None
+        )
+        cols_score = ([fecha_col_score] if fecha_col_score else []) + [
+            "Entrada", "Canal", "Habitación", "total_cop", "mes_entrada", "target"
+        ]
+        cols_score = [c for c in cols_score if c in test_df.columns]
+        df_score = test_df[cols_score].copy().reset_index(drop=True)
+        if fecha_col_score and fecha_col_score != "Fecha cancelación":
+            df_score = df_score.rename(columns={fecha_col_score: "Fecha cancelación"})
+        elif "Fecha cancelación" not in df_score.columns:
+            df_score["Fecha cancelación"] = pd.NaT
+
+        df_score["score"]    = np.round(y_proba, 4)
+        df_score["mes_ent"]  = df_score.get("mes_entrada",
+                               pd.Series([6]*len(df_score))).fillna(6).astype(int)
+        df_score["umbral"]   = df_score["mes_ent"].apply(umbral_por_temporada)
+        df_score["riesgo"]   = df_score.apply(
+            lambda r: clasificar_riesgo(r["score"], r["mes_ent"]), axis=1)
+        df_score["temporada"]= df_score["mes_ent"].apply(
+            lambda m: "Alta" if m in MESES_ALTA else
+                      "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
+        fuente_score = "test"
     cols_score = ([fecha_col_score] if fecha_col_score else []) + [
         "Entrada", "Canal", "Habitación", "total_cop", "mes_entrada", "target"
     ]
@@ -833,67 +988,83 @@ with tab2:
     filtro_riesgo = f1.multiselect("Nivel de riesgo", ["Alto","Medio","Bajo"],
                                     default=["Alto","Medio"])
     filtro_canal  = f2.multiselect("Canal",
-                                    sorted(df_score["Canal"].dropna().unique().tolist()),
+                                    sorted(df_score["Canal"].dropna().unique().tolist())
+                                    if "Canal" in df_score.columns else [],
                                     default=[])
     orden_score   = f3.radio("Ordenar por", ["Score ↓","COP ↓"], horizontal=True)
 
     df_vis = df_score.copy()
     if filtro_riesgo:
         df_vis = df_vis[df_vis["riesgo"].isin(filtro_riesgo)]
-    if filtro_canal:
+    if filtro_canal and "Canal" in df_vis.columns:
         df_vis = df_vis[df_vis["Canal"].isin(filtro_canal)]
-    if orden_score == "Score ↓":
-        df_vis = df_vis.sort_values("score", ascending=False)
-    else:
-        df_vis = df_vis.sort_values("total_cop", ascending=False)
+    sort_col = "score" if orden_score == "Score ↓" else "total_cop"
+    if sort_col in df_vis.columns:
+        df_vis = df_vis.sort_values(sort_col, ascending=False)
 
     # KPIs de scoring
-    n_alto = (df_score["riesgo"]=="Alto").sum()
-    n_medio= (df_score["riesgo"]=="Medio").sum()
-    n_bajo = (df_score["riesgo"]=="Bajo").sum()
+    n_alto  = (df_score["riesgo"]=="Alto").sum()
+    n_medio = (df_score["riesgo"]=="Medio").sum()
+    n_bajo  = (df_score["riesgo"]=="Bajo").sum()
     ka,km,kb,ktot = st.columns(4)
-    ka.metric("🔴 Riesgo Alto",   f"{n_alto}",  help="Score ≥ umbral + 0.35")
-    km.metric("🟡 Riesgo Medio",  f"{n_medio}", help="Score ≥ umbral de temporada")
-    kb.metric("🟢 Riesgo Bajo",   f"{n_bajo}",  help="Score < umbral de temporada")
+    ka.metric("🔴 Riesgo Alto",   f"{n_alto}")
+    km.metric("🟡 Riesgo Medio",  f"{n_medio}")
+    kb.metric("🟢 Riesgo Bajo",   f"{n_bajo}")
     ktot.metric("Total evaluadas", f"{len(df_score):,}")
 
-    # Tabla
-    df_tabla = df_vis[["Entrada","Canal","Habitación","total_cop","score","umbral","riesgo","real"]].copy()
-    df_tabla.columns = ["Entrada","Canal","Habitación","COP reserva","Score","Umbral","Riesgo","Real"]
-    df_tabla["COP reserva"] = df_tabla["COP reserva"].apply(
-        lambda x: f"$ {x:,.0f}".replace(",","."))
-    df_tabla["Score"] = df_tabla["Score"].map("{:.3f}".format)
-    df_tabla["Umbral"]= df_tabla["Umbral"].map("{:.2f}".format)
-    df_tabla["Entrada"] = pd.to_datetime(df_tabla["Entrada"]).dt.strftime("%Y-%m-%d")
+    # Tabla — columnas disponibles según fuente
+    cols_tabla_base = ["Entrada","Canal","Habitación","total_cop","score","umbral","riesgo"]
+    if fuente_score == "test" and "real" in df_score.columns:
+        df_score["real"] = df_score.get("target", pd.Series(0, index=df_score.index)).map(
+            {1:"Problemática", 0:"No prob."})
+        cols_tabla_base.append("real")
 
-    st.dataframe(
-        df_tabla.reset_index(drop=True),
-        use_container_width=True,
-        height=400,
-        column_config={
-            "Riesgo": st.column_config.TextColumn("Riesgo"),
-            "Score":  st.column_config.TextColumn("Score M1"),
-        }
-    )
+    if fuente_score == "activas":
+        # Para activas mostrar también el huésped si existe
+        for extra in ["huésped","Titular"]:
+            if extra in df_vis.columns:
+                cols_tabla_base = [extra] + cols_tabla_base
+                break
+
+    cols_tabla = [c for c in cols_tabla_base if c in df_vis.columns]
+    df_tabla = df_vis[cols_tabla].copy().reset_index(drop=True)
+
+    if "total_cop" in df_tabla.columns:
+        df_tabla["total_cop"] = df_tabla["total_cop"].apply(
+            lambda x: f"$ {x:,.0f}".replace(",",".") if pd.notna(x) else "—")
+    if "score" in df_tabla.columns:
+        df_tabla["score"] = df_tabla["score"].map("{:.3f}".format)
+    if "umbral" in df_tabla.columns:
+        df_tabla["umbral"] = df_tabla["umbral"].map("{:.2f}".format)
+    if "Entrada" in df_tabla.columns:
+        df_tabla["Entrada"] = pd.to_datetime(
+            df_tabla["Entrada"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    st.dataframe(df_tabla, use_container_width=True, height=420)
 
     # Exportar
+    nombre_csv = ("scoring_activas_portoalegre.csv" if fuente_score == "activas"
+                  else "scoring_test_portoalegre.csv")
     csv = df_vis.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇ Descargar scoring completo (.csv)", csv,
-                       "scoring_m1_portoalegre.csv", "text/csv")
+    st.download_button(
+        f"⬇ Descargar scoring {'activas' if fuente_score=='activas' else 'validación'} (.csv)",
+        csv, nombre_csv, "text/csv"
+    )
 
-    # Distribución de scores por riesgo
+    # Distribución de scores
     st.markdown("#### Distribución de scores")
     fig_hist = go.Figure()
     for nivel, color in [("Alto",COLORES["rojo"]),("Medio",COLORES["ambar"]),("Bajo",COLORES["teal"])]:
         sub = df_score[df_score["riesgo"]==nivel]["score"]
         fig_hist.add_trace(go.Histogram(x=sub, name=nivel,
             marker_color=color, opacity=0.75, nbinsx=30))
-    fig_hist.add_vline(x=UMBRAL_ALTA,   line_dash="dot", line_color=COLORES["rojo"],
-                       annotation_text="Alta 0.25", annotation_position="top right")
-    fig_hist.add_vline(x=UMBRAL_PRECUR, line_dash="dot", line_color=COLORES["ambar"],
-                       annotation_text="Precursor 0.30")
-    fig_hist.add_vline(x=UMBRAL_BAJA,   line_dash="dot", line_color=COLORES["teal"],
-                       annotation_text="Baja 0.45")
+    for val, label, col in [
+        (UMBRAL_ALTA,   "Alta 0.25",       COLORES["rojo"]),
+        (UMBRAL_PRECUR, "Precursor 0.30",  COLORES["ambar"]),
+        (UMBRAL_BAJA,   "Baja 0.45",       COLORES["teal"]),
+    ]:
+        fig_hist.add_vline(x=val, line_dash="dot", line_color=col,
+                           annotation_text=label, annotation_position="top right")
     fig_hist.update_layout(barmode="overlay", height=300,
         xaxis_title="Score", yaxis_title="Reservas",
         margin=dict(l=40,r=20,t=30,b=40),
@@ -1231,24 +1402,66 @@ with tab6:
     )
 
     # ── Canales de alto riesgo definidos en el documento ─────────────────────
-    CANALES_ALTO_RIESGO = ["Booking Engine", "WhatsApp Recepción", "WhatsApp pag web"]
+    CANALES_ALTO_RIESGO  = ["Booking Engine", "WhatsApp Recepción", "WhatsApp pag web"]
     CANALES_MEDIO_RIESGO = ["Redes sociales", "Venta Puerta", "Booking.com",
                              "Convenio con empresa", "Desconocido"]
 
-    # ── Reconstruir df_score si no está disponible en este scope ─────────────
-    df_accion = test_df[["Entrada", "Canal", "Habitación",
-                          "total_cop", "mes_entrada", "target"]].copy().reset_index(drop=True)
-    df_accion["score"]    = np.round(y_proba, 4)
-    df_accion["umbral"]   = df_accion["mes_entrada"].apply(umbral_por_temporada)
-    df_accion["riesgo"]   = df_accion.apply(
-        lambda r: clasificar_riesgo(r["score"], r["mes_entrada"]), axis=1)
-    df_accion["temporada"]= df_accion["mes_entrada"].apply(
-        lambda m: "Alta" if m in MESES_ALTA else
-                  "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
-    df_accion["Entrada_dt"] = pd.to_datetime(df_accion["Entrada"], dayfirst=True, errors="coerce")
+    # ── Usar reservas activas si están disponibles, si no usar test ──────────
+    if df_activas_scored is not None:
+        st.markdown("""
+        <div class="alert-ok">
+        <b>🎯 Plan basado en reservas ACTIVAS</b> — Estas son reservas que aún
+        no han cancelado. La intervención preventiva puede evitar la cancelación
+        antes de que ocurra.
+        </div>
+        """, unsafe_allow_html=True)
+        df_accion = df_activas_scored.copy()
+        df_accion["mes_entrada"] = df_accion["mes_ent"]
+        if "target" not in df_accion.columns:
+            df_accion["target"] = 0
+        # total_cop fallback
+        if "total_cop" not in df_accion.columns:
+            df_accion["total_cop"] = 0
+    else:
+        st.markdown("""
+        <div class="alert-info">
+        <b>Modo validación</b> — Plan basado en el conjunto de prueba de canceladas.
+        Sube el archivo de reservas activas en el Paso 2 del panel izquierdo
+        para ver el plan operativo del día.
+        </div>
+        """, unsafe_allow_html=True)
+        df_accion = test_df[["Entrada", "Canal", "Habitación",
+                              "total_cop", "mes_entrada", "target"]].copy().reset_index(drop=True)
+        df_accion["score"]    = np.round(y_proba, 4)
+        df_accion["umbral"]   = df_accion["mes_entrada"].apply(umbral_por_temporada)
+        df_accion["riesgo"]   = df_accion.apply(
+            lambda r: clasificar_riesgo(r["score"], r["mes_entrada"]), axis=1)
+        df_accion["temporada"]= df_accion["mes_entrada"].apply(
+            lambda m: "Alta" if m in MESES_ALTA else
+                      "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
+
+    # Añadir columnas necesarias si no existen
+    if "Entrada_dt" not in df_accion.columns:
+        df_accion["Entrada_dt"] = pd.to_datetime(
+            df_accion.get("Entrada", pd.NaT), dayfirst=True, errors="coerce")
     df_accion["dias_para_entrada"] = (
         df_accion["Entrada_dt"] - pd.Timestamp.now()
-    ).dt.days.clip(lower=0)
+    ).dt.days.clip(lower=0).fillna(0).astype(int)
+
+    # Asegurar columnas mínimas
+    if "Canal" not in df_accion.columns:
+        df_accion["Canal"] = "Desconocido"
+    if "Habitación" not in df_accion.columns:
+        df_accion["Habitación"] = "Desconocido"
+    if "total_cop" not in df_accion.columns:
+        df_accion["total_cop"] = 0
+    if "riesgo" not in df_accion.columns:
+        df_accion["riesgo"] = df_accion.apply(
+            lambda r: clasificar_riesgo(r["score"], r.get("mes_entrada",6)), axis=1)
+    if "temporada" not in df_accion.columns:
+        df_accion["temporada"] = df_accion.get("mes_entrada", 6).apply(
+            lambda m: "Alta" if m in MESES_ALTA else
+                      "Precursora" if m in MESES_PRECURSOR else "Media/Baja")
 
     # Solo reservas en alerta (score >= umbral de temporada)
     df_alerta = df_accion[df_accion["riesgo"].isin(["Alto", "Medio"])].copy()
