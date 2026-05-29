@@ -1513,17 +1513,78 @@ with tab6:
     st.markdown("---")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # ACCIÓN 1 — CONTACTO PROACTIVO
+    # TABLA COMPLETA DE ALERTAS — visible de inmediato
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("### 📋 Todas las reservas en alerta")
+    st.caption("Ordenadas por COP en riesgo · Haz clic en una fila para ver el detalle")
+
+    # Detectar columnas de contacto disponibles en el archivo
+    COL_TEL   = next((c for c in ["Teléfono","telefono","Tel","Phone"] if c in df_accion.columns), None)
+    COL_EMAIL = next((c for c in ["Email","email","Correo","correo"] if c in df_accion.columns), None)
+    COL_HUESPED = next((c for c in ["huésped","Titular","Cliente","nombre"] if c in df_accion.columns), None)
+
+    # Construir tabla de alerta con columnas de contacto
+    cols_alerta = []
+    if COL_HUESPED: cols_alerta.append(COL_HUESPED)
+    if COL_TEL:     cols_alerta.append(COL_TEL)
+    if COL_EMAIL:   cols_alerta.append(COL_EMAIL)
+    cols_alerta += ["Entrada", "Habitación", "Canal", "total_cop",
+                    "score", "riesgo", "temporada", "dias_para_entrada"]
+    cols_alerta = [c for c in cols_alerta if c in df_alerta.columns]
+
+    df_tabla_alerta = df_alerta[cols_alerta].copy().sort_values(
+        "total_cop", ascending=False).reset_index(drop=True)
+
+    # Formatear columnas
+    if "total_cop" in df_tabla_alerta.columns:
+        df_tabla_alerta["total_cop"] = df_tabla_alerta["total_cop"].apply(
+            lambda x: f"$ {x:,.0f}".replace(",",".") if pd.notna(x) else "—")
+    if "score" in df_tabla_alerta.columns:
+        df_tabla_alerta["score"] = df_tabla_alerta["score"].map("{:.3f}".format)
+    if "Entrada" in df_tabla_alerta.columns:
+        df_tabla_alerta["Entrada"] = pd.to_datetime(
+            df_tabla_alerta["Entrada"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    # Renombrar para display
+    rename_display = {
+        "total_cop": "COP reserva", "score": "Score M1",
+        "riesgo": "Riesgo", "temporada": "Temporada",
+        "dias_para_entrada": "Días p/check-in",
+    }
+    if COL_HUESPED: rename_display[COL_HUESPED] = "Huésped"
+    if COL_TEL:     rename_display[COL_TEL]     = "📞 Teléfono"
+    if COL_EMAIL:   rename_display[COL_EMAIL]   = "✉ Email"
+    df_tabla_alerta = df_tabla_alerta.rename(columns=rename_display)
+
+    if not COL_TEL and not COL_EMAIL:
+        st.warning("⚠️ El archivo no tiene columnas de Teléfono ni Email. "
+                   "Exporta desde Lobbybookings incluyendo datos de contacto del huésped.")
+
+    st.dataframe(df_tabla_alerta, use_container_width=True, height=380)
+
+    # Exportar tabla completa con contacto
+    csv_alerta = df_alerta[cols_alerta].sort_values(
+        "total_cop", ascending=False).to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "⬇ Descargar lista completa de alertas con contacto (.csv)",
+        csv_alerta, "alertas_con_contacto.csv", "text/csv",
+        use_container_width=True
+    )
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACCIÓN 1 — CONTACTO PROACTIVO (Riesgo Alto)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("""
-    <div style="border-left:5px solid #1E2761;padding:.6rem 1.2rem;
-                background:#F0F4FB;border-radius:0 10px 10px 0;margin-bottom:1rem;">
-      <span style="font-size:.75rem;font-weight:700;color:#4FA3E0;
-                   letter-spacing:.1em;">ACCIÓN 01</span>
+    <div style="border-left:5px solid #E24B4A;padding:.6rem 1.2rem;
+                background:#FFF5F5;border-radius:0 10px 10px 0;margin-bottom:1rem;">
+      <span style="font-size:.75rem;font-weight:700;color:#E24B4A;
+                   letter-spacing:.1em;">ACCIÓN 01 · RIESGO ALTO</span>
       <h4 style="margin:.2rem 0;color:#1E2761;">📞 Contacto Proactivo</h4>
       <p style="margin:0;color:#6B7280;font-size:.9rem;">
-        Llamar o escribir al huésped antes del check-in para confirmar la reserva
-        y reducir no-shows · <b>Prioridad: mayor COP en riesgo primero</b>
+        Llamar al huésped <b>antes del check-in</b> para confirmar la reserva y reducir no-shows
+        · Prioridad: mayor COP en riesgo primero
       </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1532,72 +1593,155 @@ with tab6:
     df_contacto = df_contacto.sort_values("total_cop", ascending=False)
 
     if len(df_contacto) == 0:
-        st.info("✅ No hay reservas de riesgo Alto en el conjunto evaluado.")
+        st.info("✅ No hay reservas de riesgo Alto.")
     else:
-        # Mensaje sugerido de contacto
-        col_t, col_msg = st.columns([1, 1.5])
+        col_t, col_msg = st.columns([1.2, 1])
         with col_t:
-            st.markdown(f"**{len(df_contacto)} reservas para contactar**")
-            tabla_c = df_contacto[["Entrada", "Canal", "Habitación",
-                                    "total_cop", "score", "temporada",
-                                    "dias_para_entrada"]].copy()
-            tabla_c.columns = ["Entrada", "Canal", "Habitación",
-                                "COP", "Score", "Temporada", "Días p/entrada"]
-            tabla_c["COP"]   = tabla_c["COP"].apply(
-                lambda x: f"$ {x:,.0f}".replace(",", "."))
-            tabla_c["Score"] = tabla_c["Score"].map("{:.3f}".format)
-            tabla_c["Entrada"] = pd.to_datetime(
-                tabla_c["Entrada"], dayfirst=True, errors="coerce"
-            ).dt.strftime("%Y-%m-%d")
+            st.markdown(f"**{len(df_contacto)} reservas — llamar hoy**")
+
+            # Incluir contacto en la tabla
+            cols_c = []
+            if COL_HUESPED: cols_c.append(COL_HUESPED)
+            if COL_TEL:     cols_c.append(COL_TEL)
+            if COL_EMAIL:   cols_c.append(COL_EMAIL)
+            cols_c += ["Entrada","Habitación","Canal","total_cop","score","dias_para_entrada"]
+            cols_c = [c for c in cols_c if c in df_contacto.columns]
+
+            tabla_c = df_contacto[cols_c].copy()
+            if "total_cop" in tabla_c.columns:
+                tabla_c["total_cop"] = tabla_c["total_cop"].apply(
+                    lambda x: f"$ {x:,.0f}".replace(",",".") if pd.notna(x) else "—")
+            if "score" in tabla_c.columns:
+                tabla_c["score"] = tabla_c["score"].map("{:.3f}".format)
+            if "Entrada" in tabla_c.columns:
+                tabla_c["Entrada"] = pd.to_datetime(
+                    tabla_c["Entrada"], errors="coerce").dt.strftime("%Y-%m-%d")
+            rn = {"total_cop":"COP","score":"Score","dias_para_entrada":"Días p/entrada"}
+            if COL_HUESPED: rn[COL_HUESPED]="Huésped"
+            if COL_TEL:     rn[COL_TEL]="📞 Teléfono"
+            if COL_EMAIL:   rn[COL_EMAIL]="✉ Email"
+            tabla_c = tabla_c.rename(columns=rn)
             st.dataframe(tabla_c.reset_index(drop=True),
-                         use_container_width=True, height=280)
+                         use_container_width=True, height=260)
 
         with col_msg:
             st.markdown("**Mensaje sugerido para WhatsApp / llamada:**")
-            dias_ejemplo = int(df_contacto["dias_para_entrada"].iloc[0]) if len(df_contacto) > 0 else 3
-            st.markdown(f"""
+            st.markdown("""
             <div style="background:#FFF8EB;border:1px solid #F5B642;border-radius:10px;
-                        padding:1rem 1.2rem;font-size:.88rem;color:#374151;
+                        padding:1rem 1.2rem;font-size:.85rem;color:#374151;
                         font-family:'Courier New',monospace;white-space:pre-wrap;">
 Estimado/a [nombre del huésped],
 
-Le contactamos desde el Hotel Portoalegre para
-confirmar su reserva programada para el
-[fecha de entrada].
+Le contactamos desde el Hotel Portoalegre
+para confirmar su reserva del [fecha entrada]
+en habitación [habitación].
 
-Por favor responda este mensaje o llámenos al
-[teléfono del hotel] para confirmar su llegada.
+Por favor confirme su llegada respondiendo
+este mensaje o llamando al [tel. del hotel].
 
-De no recibir confirmación en las próximas
-24 horas, procederemos a liberar la habitación.
+Sin confirmación en 24 horas, la habitación
+podrá ser reasignada.
 
-¡Esperamos recibirle pronto!
-Hotel Portoalegre · Coveñas
+¡Le esperamos!
+Hotel Portoalegre · Coveñas 📍
             </div>
             """, unsafe_allow_html=True)
 
-            # Exportar lista de contacto
-            csv_c = df_contacto[["Entrada","Canal","Habitación",
-                                  "total_cop","score"]].to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇ Descargar lista de contacto (.csv)",
-                csv_c, "accion01_contacto_proactivo.csv", "text/csv"
-            )
+            csv_c = df_contacto[cols_c].to_csv(index=False).encode("utf-8")
+            st.download_button("⬇ Lista contacto Alto (.csv)",
+                csv_c, "accion01_riesgo_alto.csv", "text/csv")
 
     st.markdown("---")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # ACCIÓN 2 — REASIGNACIÓN DE HABITACIÓN
+    # ACCIÓN 1B — SEGUIMIENTO (Riesgo Medio)
+    # ══════════════════════════════════════════════════════════════════════════
+    st.markdown("""
+    <div style="border-left:5px solid #F5B642;padding:.6rem 1.2rem;
+                background:#FFFBF0;border-radius:0 10px 10px 0;margin-bottom:1rem;">
+      <span style="font-size:.75rem;font-weight:700;color:#F5B642;
+                   letter-spacing:.1em;">ACCIÓN 01B · RIESGO MEDIO</span>
+      <h4 style="margin:.2rem 0;color:#1E2761;">🔔 Seguimiento preventivo</h4>
+      <p style="margin:0;color:#6B7280;font-size:.9rem;">
+        Enviar recordatorio por WhatsApp <b>48 horas antes del check-in</b>
+        · No requiere llamada, pero sí confirmación escrita
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    df_medio = df_alerta[df_alerta["riesgo"] == "Medio"].copy()
+    df_medio = df_medio.sort_values("total_cop", ascending=False)
+
+    if len(df_medio) == 0:
+        st.info("✅ No hay reservas de riesgo Medio.")
+    else:
+        col_m1, col_m2 = st.columns([1.2, 1])
+        with col_m1:
+            st.markdown(f"**{len(df_medio)} reservas — enviar recordatorio 48h antes**")
+
+            cols_m = []
+            if COL_HUESPED: cols_m.append(COL_HUESPED)
+            if COL_TEL:     cols_m.append(COL_TEL)
+            if COL_EMAIL:   cols_m.append(COL_EMAIL)
+            cols_m += ["Entrada","Habitación","Canal","total_cop","score","dias_para_entrada"]
+            cols_m = [c for c in cols_m if c in df_medio.columns]
+
+            tabla_m = df_medio[cols_m].copy()
+            if "total_cop" in tabla_m.columns:
+                tabla_m["total_cop"] = tabla_m["total_cop"].apply(
+                    lambda x: f"$ {x:,.0f}".replace(",",".") if pd.notna(x) else "—")
+            if "score" in tabla_m.columns:
+                tabla_m["score"] = tabla_m["score"].map("{:.3f}".format)
+            if "Entrada" in tabla_m.columns:
+                tabla_m["Entrada"] = pd.to_datetime(
+                    tabla_m["Entrada"], errors="coerce").dt.strftime("%Y-%m-%d")
+            rn_m = {"total_cop":"COP","score":"Score","dias_para_entrada":"Días p/entrada"}
+            if COL_HUESPED: rn_m[COL_HUESPED]="Huésped"
+            if COL_TEL:     rn_m[COL_TEL]="📞 Teléfono"
+            if COL_EMAIL:   rn_m[COL_EMAIL]="✉ Email"
+            tabla_m = tabla_m.rename(columns=rn_m)
+            st.dataframe(tabla_m.reset_index(drop=True),
+                         use_container_width=True, height=260)
+
+        with col_m2:
+            st.markdown("**Mensaje sugerido para WhatsApp (recordatorio):**")
+            st.markdown("""
+            <div style="background:#FFF8EB;border:1px solid #F5B642;border-radius:10px;
+                        padding:1rem 1.2rem;font-size:.85rem;color:#374151;
+                        font-family:'Courier New',monospace;white-space:pre-wrap;">
+Hola [nombre del huésped] 👋
+
+Le recordamos que tiene una reserva en el
+Hotel Portoalegre para el [fecha entrada]
+en habitación [habitación].
+
+¿Confirma su llegada?
+Responda SI para confirmar o NO si necesita
+hacer algún cambio.
+
+¡Hasta pronto!
+Hotel Portoalegre · Coveñas 🏖️
+            </div>
+            """, unsafe_allow_html=True)
+
+            csv_m = df_medio[cols_m].to_csv(index=False).encode("utf-8")
+            st.download_button("⬇ Lista seguimiento Medio (.csv)",
+                csv_m, "accion01b_riesgo_medio.csv", "text/csv")
+
+    st.markdown("---")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ACCIÓN 2 — REASIGNACIÓN DE HABITACIÓN (Alto + Temporada Alta)
     # ══════════════════════════════════════════════════════════════════════════
     st.markdown("""
     <div style="border-left:5px solid #1AAE9F;padding:.6rem 1.2rem;
                 background:#F0FBF8;border-radius:0 10px 10px 0;margin-bottom:1rem;">
       <span style="font-size:.75rem;font-weight:700;color:#1AAE9F;
-                   letter-spacing:.1em;">ACCIÓN 02</span>
+                   letter-spacing:.1em;">ACCIÓN 02 · TEMPORADA ALTA</span>
       <h4 style="margin:.2rem 0;color:#1E2761;">🏨 Reasignación de Habitación</h4>
       <p style="margin:0;color:#6B7280;font-size:.9rem;">
-        En <b>temporada alta</b>, las habitaciones de reservas en riesgo alto se
-        liberan para reasignación a tarifa premium · Protege el RevPAR
+        Habitaciones de reservas Alto en temporada Alta → liberar para tarifa premium
+        · Protege el RevPAR
       </p>
     </div>
     """, unsafe_allow_html=True)
@@ -1608,29 +1752,25 @@ Hotel Portoalegre · Coveñas
     ].copy().sort_values("total_cop", ascending=False)
 
     if len(df_reasig) == 0:
-        st.info("✅ No hay reservas de riesgo Alto en temporada Alta en el conjunto evaluado.")
+        st.info("✅ No hay reservas Alto en temporada Alta.")
     else:
         col_r1, col_r2 = st.columns([1.5, 1])
         with col_r1:
-            st.markdown(f"**{len(df_reasig)} habitaciones candidatas a reasignación en temporada Alta**")
-
-            # Agrupar por tipo de habitación
+            st.markdown(f"**{len(df_reasig)} habitaciones candidatas a reasignación**")
             hab_group = df_reasig.groupby("Habitación").agg(
-                n=("total_cop", "count"),
-                cop_total=("total_cop", "sum"),
-                score_prom=("score", "mean")
+                n=("total_cop","count"),
+                cop_total=("total_cop","sum"),
+                score_prom=("score","mean")
             ).reset_index().sort_values("cop_total", ascending=False)
-            hab_group["COP total"] = hab_group["cop_total"].apply(
-                lambda x: f"$ {x:,.0f}".replace(",", "."))
+            hab_group["COP total"]   = hab_group["cop_total"].apply(
+                lambda x: f"$ {x:,.0f}".replace(",","."))
             hab_group["Score prom."] = hab_group["score_prom"].map("{:.3f}".format)
             st.dataframe(
-                hab_group[["Habitación", "n", "COP total", "Score prom."]].rename(
-                    columns={"n": "Reservas en riesgo"}),
-                use_container_width=True, hide_index=True
-            )
+                hab_group[["Habitación","n","COP total","Score prom."]].rename(
+                    columns={"n":"Reservas en riesgo"}),
+                use_container_width=True, hide_index=True)
 
         with col_r2:
-            st.markdown("**Protocolo de reasignación:**")
             cop_liberado = df_reasig["total_cop"].sum()
             st.markdown(f"""
             <div style="background:#CFEDE6;border-radius:10px;padding:1rem 1.2rem;
@@ -1638,21 +1778,23 @@ Hotel Portoalegre · Coveñas
             <b>COP potencialmente liberado</b><br>
             <span style="font-size:1.4rem;font-weight:700;">
             {formatear_cop(cop_liberado)}</span><br><br>
-            <b>Pasos:</b><br>
-            1️⃣ Identificar las habitaciones de esta lista<br>
-            2️⃣ Activar la reserva de lista de espera si existe<br>
-            3️⃣ Publicar disponibilidad en Booking.com con tarifa +15%<br>
-            4️⃣ Si no hay lista de espera, priorizar venta puerta en los próximos 3 días<br>
-            5️⃣ Registrar la acción en Lobbybookings
+            <b>Protocolo:</b><br>
+            1️⃣ Identificar habitaciones de la lista<br>
+            2️⃣ Activar lista de espera si existe<br>
+            3️⃣ Publicar en Booking.com a tarifa +15%<br>
+            4️⃣ Si no hay espera: venta puerta (3 días)<br>
+            5️⃣ Registrar en Lobbybookings
             </div>
             """, unsafe_allow_html=True)
 
-        csv_r = df_reasig[["Entrada","Habitación","Canal",
-                            "total_cop","score"]].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇ Descargar lista de reasignación (.csv)",
-            csv_r, "accion02_reasignacion_habitacion.csv", "text/csv"
-        )
+        cols_r = []
+        if COL_HUESPED: cols_r.append(COL_HUESPED)
+        if COL_TEL:     cols_r.append(COL_TEL)
+        cols_r += ["Entrada","Habitación","Canal","total_cop","score"]
+        cols_r = [c for c in cols_r if c in df_reasig.columns]
+        csv_r = df_reasig[cols_r].to_csv(index=False).encode("utf-8")
+        st.download_button("⬇ Lista reasignación (.csv)",
+            csv_r, "accion02_reasignacion.csv", "text/csv")
 
     st.markdown("---")
 
